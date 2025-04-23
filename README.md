@@ -20,4 +20,5 @@ docker run -it -e DISPLAY=$DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix drake-ros:hu
 
 Below is the iiwa_manipulator on rviz:
 
+It looks like joint orientations are incorrect. Seems to be an issue reported by many users [here](https://github.com/RobotLocomotion/drake-ros/issues/358).
 ![image](https://github.com/user-attachments/assets/8e621433-6593-4499-9d7c-48f69fd65db5)
