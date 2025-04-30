@@ -7,6 +7,7 @@
 #include <drake/multibody/plant/multibody_plant.h>
 #include <drake/systems/analysis/simulator.h>
 #include <drake/systems/framework/diagram_builder.h>
+#include <drake/multibody/plant/externally_applied_spatial_force.h>
 
 #include <Eigen/Dense>  // For Eigen::Vector3d
 
@@ -14,6 +15,7 @@ using namespace drake;
 using namespace drake::geometry;
 using namespace drake::multibody;
 using namespace drake::systems;
+
 
 int main() {
     DiagramBuilder<double> builder;
@@ -65,7 +67,30 @@ int main() {
     // Set initial pose of cube (0.2m above ground)
     plant->SetFreeBodyPose(plant_context, cube, math::RigidTransformd(Eigen::Vector3d(0.0, 0.0, 0.2)));
 
+    drake::multibody::ExternallyAppliedSpatialForce<double> force;
+    Eigen::Vector3d force_vector (10.0, 0.0, 0.0);   // 10 N +X
+    Eigen::Vector3d torque_vector( 0.0, 0.0, 0.1);   // 0.1 N·m about +Z
+
+    // Point of application, expressed in the cube’s body frame B
+    Eigen::Vector3d p_BoBq_B = Eigen::Vector3d::Zero();  // body origin
+    force.body_index = cube.index();                    // which body
+    force.p_BoBq_B   = p_BoBq_B;                             // where on that body
+    force.F_Bq_W     = SpatialForce<double>(torque_vector,   // τ
+                                        force_vector);   // F
+
+    // Create a vector of forces
+    std::vector<ExternallyAppliedSpatialForce<double>> forces{force};
+    forces.push_back(force);
+
+    // Fix the value at the input port
+    plant->get_applied_spatial_force_input_port().FixValue(plant_context, forces);
+
     // Simulate
+    // Press enter to start
+    std::cout << "Press Enter to start..." << std::endl;
+    std::cin.get();
+
+
     Simulator<double> simulator(*diagram, std::move(context));
     simulator.set_target_realtime_rate(1.0);
     simulator.Initialize();
