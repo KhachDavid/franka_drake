@@ -20,8 +20,16 @@ int main() {
     multibody::Parser parser(&plant, &scene_graph);
     parser.package_map().AddPackageXml("/home/david/ws/franka/src/franka_description/package.xml");
 
-    parser.AddModels("/home/david/final_project/franka_drake_test/fer_drake.urdf");
+    // Load and get model instance
+    multibody::ModelInstanceIndex panda = parser.AddModels("/home/david/final_project/franka_drake_test/fer_drake.urdf")[0];
 
+    // Weld base link to world frame
+    plant.WeldFrames(
+        plant.world_frame(),
+        plant.GetFrameByName("base", panda),
+        math::RigidTransformd());
+
+    // Finalize plant
     plant.Finalize();
 
     // Enable Meshcat + Drake visualizer
@@ -36,7 +44,7 @@ int main() {
     simulator.Initialize();
     simulator.AdvanceTo(0.1);
 
-    // Keep alive so Meshcat has time to show it
+    // Keep alive briefly so Meshcat has time to display
     std::this_thread::sleep_for(std::chrono::seconds(5));
 
     return 0;
