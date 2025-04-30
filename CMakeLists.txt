@@ -12,3 +12,5 @@ find_package(drake REQUIRED)
 
 add_executable(sim main.cpp)
 target_link_libraries(sim drake::drake)
+
+add_subdirectory(examples)
