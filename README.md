@@ -2,12 +2,27 @@
 
 ## Week of April 28
 
-This week, the goal is to have Franka simulation up and running on Drake
+This week, the goal is to have Franka simulation up and running on Drake. This was achieved by using the franka_description repository found [here](https://github.com/m-elwin/franka_description/tree/panda). Note that the you must be on the panda branch.
+
+Then the Panda FER urdf file was generated using the franka description repository.
+
+```
+xacro <PATH_TO_FRANKA_REPO>/franka_description/robots/fer/fer.urdf.xacro hand:=true > <PATH_TO_THIS_REPO>/fer_drake.urdf
+```
+
+The resulting URDF file included .stl mesh files, which causes issues in Drake because STL files do not contain scale or unit metadata. This can lead to incorrect rendering or physics behavior. At the moment the collisions were commented out to ensure the compilation of the Drake program in C++. In order to use them, they must be converted to .obj or .dae files. Here is a link to the file showing the commented out collisions. [File](https://github.com/KhachDavid/simTorealTosim/blob/main/fer_drake.urdf#L27)
+
+Once the mesh compatibility was resolved, the robot was successfully loaded into Drake using MultibodyPlant and visualized through SceneGraph. The binary was set up to continue running the WebSocket until the user presses enter. This was created to improve the developer experience.
+
+At this point, Franka was just floating in the scene. This [commit](https://github.com/KhachDavid/simTorealTosim/commit/eff95d17b6ee18eaacfdb587a875bab8475700e9) attached franka base frame to `0,0,0`. The result was this. It can be observed that the base is attached and all the other joints are being pulled down by gravity.
+
+![image](https://github.com/user-attachments/assets/2fa1e2d2-06c1-4894-b45b-8007f5293ae1)
+
 
 ### Setup Instructions
 
 #### 1. Get Franka Description
-Clone the following repo into `~/ws/franka/src/franka_description`
+Clone the following repo into `~/ws/franka/src/franka_description`. Make sure you are on the panda branch. 
 
 ```
 git clone https://github.com/m-elwin/franka_description
@@ -40,7 +55,6 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j$(nproc)
 sudo make install
 ```
-# simTorealTosim
 
 ## Week of April 21
 
