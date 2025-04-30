@@ -61,6 +61,23 @@ make -j$(nproc)
 sudo make install
 ```
 
+#### 5. Run the example of a moving cube
+
+```
+mkdir build && cd build
+cmake ..
+make -j 32
+./example/moving_cube
+```
+
+You should observe torque being applied to the center of the cube. Here is a demo:
+
+
+
+https://github.com/user-attachments/assets/f8c52540-4a6a-4bb5-b292-1737324baa2e
+
+
+
 ## Week of April 21
 
 The main goal of this week is to understand Drake’s environment and see an example of Franka running and moving in Drake.
