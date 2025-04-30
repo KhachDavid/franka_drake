@@ -1,4 +1,5 @@
 #include <chrono>
+#include <iostream>
 #include <thread>
 #include <drake/common/find_resource.h>
 #include <drake/geometry/scene_graph.h>
@@ -18,10 +19,10 @@ int main() {
 
     // Set up parser and load the Franka model
     multibody::Parser parser(&plant, &scene_graph);
-    parser.package_map().AddPackageXml("/home/david/ws/franka/src/franka_description/package.xml");
+    parser.package_map().AddPackageXml("~/ws/franka/src/franka_description/package.xml");
 
     // Load and get model instance
-    multibody::ModelInstanceIndex panda = parser.AddModels("/home/david/final_project/franka_drake_test/fer_drake.urdf")[0];
+    multibody::ModelInstanceIndex panda = parser.AddModels("~/final_project/franka_drake_test/fer_drake.urdf")[0];
 
     // Weld base link to world frame
     plant.WeldFrames(
@@ -42,10 +43,11 @@ int main() {
 
     // Initialize simulation
     simulator.Initialize();
-    simulator.AdvanceTo(0.1);
+    simulator.AdvanceTo(5);
 
     // Keep alive briefly so Meshcat has time to display
-    std::this_thread::sleep_for(std::chrono::seconds(5));
+    std::cout << "Press Enter to exit..." << std::endl;
+    std::cin.get();
 
     return 0;
 }
