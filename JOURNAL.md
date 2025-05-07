@@ -2,7 +2,7 @@
 
 ## Week of May 5
 
-This week, the goal is to understand libfranka inputs and experiment with the anti gravity component of franka joints in drake.
+This week, the goal is to understand libfranka inputs and experiment with the anti gravity component of franka joints in drake. In addition, last week I created technical debt by uncommenting collision stl files in the URDF. This week I used blender to convert them to `.obj` format, as required by Drake. This went smoothly and the files were pushed as a fork of franka_description and can be found [here](https://github.com/KhachDavid/franka_description).
 
 For the purpose of understanding libfranka inputs, I used the deep research functionality on chat gpt (chat [here](https://chatgpt.com/share/681a20e7-df5c-8001-8a9f-806dfbe8daca)). Below are the input types:
 
@@ -30,6 +30,9 @@ In the case of Drake gravity compensation, I found that PyBullet has a gravity c
 
 ![image](https://github.com/user-attachments/assets/4239111f-42d4-477a-aa64-10ad67f6c6d9)
 
+For implementing anti-gravity torque in Drake, we have to phrase this as a statics problem.
+
+$$\tau_{applied}(q) = -\tau_{g}(q)$$
 
 ## Week of April 28
 
