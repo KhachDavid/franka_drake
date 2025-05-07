@@ -11,7 +11,15 @@
 
 using namespace drake;
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " <path_to_package.xml> <path_to_urdf>" << std::endl;
+        return 1;
+    }
+
+    std::string package_xml_path = argv[1];
+    std::string urdf_path = argv[2];
+
     systems::DiagramBuilder<double> builder;
 
     // Set up plant + scene graph
@@ -19,10 +27,10 @@ int main() {
 
     // Set up parser and load the Franka model
     multibody::Parser parser(&plant, &scene_graph);
-    parser.package_map().AddPackageXml("~/ws/franka/src/franka_description/package.xml");
+    parser.package_map().AddPackageXml(package_xml_path);
 
     // Load and get model instance
-    multibody::ModelInstanceIndex panda = parser.AddModels("~/final_project/franka_drake_test/fer_drake.urdf")[0];
+    multibody::ModelInstanceIndex panda = parser.AddModels(urdf_path)[0];
 
     // Weld base link to world frame
     plant.WeldFrames(
@@ -45,7 +53,6 @@ int main() {
     simulator.Initialize();
     simulator.AdvanceTo(5);
 
-    // Keep alive briefly so Meshcat has time to display
     std::cout << "Press Enter to exit..." << std::endl;
     std::cin.get();
 
