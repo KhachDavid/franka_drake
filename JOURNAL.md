@@ -26,6 +26,11 @@ Final J7 error = -0.000316827 rad
 
 This is about 1/5th of a degree, which is close enough to consider that the output was exactly matching the input. The repository containing these examples can be found [here](https://github.com/KhachDavid/libfranka-examples).
 
+In the case of Drake gravity compensation, I found that PyBullet has a gravity compensation term in this [repo](https://github.com/PaulPauls/franka_emika_panda_pybullet/tree/master):
+
+![image](https://github.com/user-attachments/assets/4239111f-42d4-477a-aa64-10ad67f6c6d9)
+
+
 ## Week of April 28
 
 This week, the goal is to have Franka simulation up and running on Drake. This was achieved by using the franka_description repository found [here](https://github.com/m-elwin/franka_description/tree/panda). Note that the you must be on the panda branch.
