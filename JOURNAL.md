@@ -34,6 +34,17 @@ For implementing anti-gravity torque in Drake, we have to phrase this as a stati
 
 $$\tau_{applied}(q) = -\tau_{g}(q)$$
 
+```cpp
+auto id = builder.AddSystem<InverseDynamics<double>>(
+    &plant,
+    InverseDynamics<double>::InverseDynamicsMode::kGravityCompensation);
+```
+
+During each simulator tick, this evaluates and finds the torque needed to compensate for gravity. 
+
+![image](https://github.com/user-attachments/assets/bc1c36f9-76ef-4a73-a5a2-b91a8dc51bbd)
+
+
 ## Week of April 28
 
 This week, the goal is to have Franka simulation up and running on Drake. This was achieved by using the franka_description repository found [here](https://github.com/m-elwin/franka_description/tree/panda). Note that the you must be on the panda branch.
