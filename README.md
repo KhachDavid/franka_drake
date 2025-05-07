@@ -51,3 +51,8 @@ You should observe torque being applied to the center of the cube. Here is a dem
 
 
 https://github.com/user-attachments/assets/f8c52540-4a6a-4bb5-b292-1737324baa2e
+
+#### 6. Run the main file and provide CLI arguments
+```
+./sim ~/ws/franka/src/franka_description/package.xml ~/final_project/franka_drake_test/fer_drake.urdf
+```
