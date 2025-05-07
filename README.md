@@ -14,7 +14,12 @@ The resulting URDF file included .stl mesh files, which causes issues in Drake b
 
 Once the mesh compatibility was resolved, the robot was successfully loaded into Drake using MultibodyPlant and visualized through SceneGraph. The binary was set up to continue running the WebSocket until the user presses enter. This was created to improve the developer experience.
 
-At this point, Franka was just floating in the scene. This [commit](https://github.com/KhachDavid/simTorealTosim/commit/eff95d17b6ee18eaacfdb587a875bab8475700e9) attached franka base frame to `0,0,0`. The result was this. It can be observed that the base is attached and all the other joints are being pulled down by gravity.
+At this point, Franka was just falling in the scene. With `simulator.advanceTo(1)` franka would be below z=0, indicating that Drake's built-in gravity is pulling the robot down. This barebones initalization of franka can be found in main.cpp of this [commit](https://github.com/KhachDavid/simTorealTosim/blob/1797664abb83c181a32993c778f32256fca9bf8c/main.cpp).
+
+![image](https://github.com/user-attachments/assets/7355436f-3199-46e3-bdce-3f141aa78d23)
+
+
+This [commit](https://github.com/KhachDavid/simTorealTosim/commit/eff95d17b6ee18eaacfdb587a875bab8475700e9) attached franka base frame to `0,0,0`. The result was this. It can be observed that the base is attached and all the other joints are still being pulled down by gravity.
 
 ![image](https://github.com/user-attachments/assets/2fa1e2d2-06c1-4894-b45b-8007f5293ae1)
 
@@ -55,6 +60,23 @@ cmake -DCMAKE_BUILD_TYPE=Release ..
 make -j$(nproc)
 sudo make install
 ```
+
+#### 5. Run the example of a moving cube
+
+```
+mkdir build && cd build
+cmake ..
+make -j 32
+./example/moving_cube
+```
+
+You should observe torque being applied to the center of the cube. Here is a demo:
+
+
+
+https://github.com/user-attachments/assets/f8c52540-4a6a-4bb5-b292-1737324baa2e
+
+
 
 ## Week of April 21
 
