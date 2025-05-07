@@ -1,5 +1,31 @@
 # Simulating Franka FER3 Control Box in Drake
 
+## Week of May 5
+
+This week, the goal is to understand libfranka inputs and experiment with the anti gravity component of franka joints in drake.
+
+For the purpose of understanding libfranka inputs, I used the deep research functionality on chat gpt (chat [here](https://chatgpt.com/share/681a20e7-df5c-8001-8a9f-806dfbe8daca)). Below are the input types:
+
+    Joint positions – franka::JointPositions (7 joint angles in radians).
+
+    Joint velocities – franka::JointVelocities (7 joint angular rates in rad/s).
+
+    Cartesian pose – franka::CartesianPose (4 × 4 homogeneous matrix, optional elbow hint).
+
+    Cartesian twist (velocity) – franka::CartesianVelocities (linear + angular tool-frame velocities).
+
+    Joint torques – franka::Torques (7 joint torques in N·m).
+
+Any motion-generator command (1–4) can be returned alone or together with a torque command (5) by calling robot.control(motion_cb, torque_cb). Motion commands are terminated with franka::MotionFinished(...).
+
+Examples were written for each type of input, where joint 7 was moved on the real franka. For position, I measured the difference between joint 7 input and output. 
+
+```
+Final J7 error = -0.000316827 rad
+```
+
+This is about 1/5th of a degree, which is close enough to consider that the output was exactly matching the input. The repository containing these examples can be found [here](https://github.com/KhachDavid/libfranka-examples).
+
 ## Week of April 28
 
 This week, the goal is to have Franka simulation up and running on Drake. This was achieved by using the franka_description repository found [here](https://github.com/m-elwin/franka_description/tree/panda). Note that the you must be on the panda branch.
