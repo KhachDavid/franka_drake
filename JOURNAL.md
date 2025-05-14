@@ -26,7 +26,9 @@ Blue curve (position) – Joint 7 starts at 0.8 rad, crosses the 0.7 rad set-poi
 
 Orange curve (velocity) – Small negative velocity the whole time.
 
+Since there is a steady state error, one way to alleviate this would be adding an integral term.
 
+Another idea is to increase feedback gains
 
 
 ## Week of May 5
