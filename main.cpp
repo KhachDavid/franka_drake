@@ -13,6 +13,9 @@
 #include <drake/systems/framework/diagram_builder.h>
 #include <drake/systems/primitives/constant_vector_source.h>
 #include <drake/visualization/visualization_config_functions.h>
+#include <drake/systems/controllers/pid_controller.h>
+#include <drake/systems/primitives/adder.h>
+#include <drake/systems/primitives/vector_log_sink.h>
 
 using namespace drake;
 using Eigen::VectorXd;
@@ -33,7 +36,8 @@ int main(int argc, char* argv[]) {
   // Plant and SceneGraph
   // --------------------------------------------------------------------------
   auto [plant, scene_graph] =
-      multibody::AddMultibodyPlantSceneGraph(&builder, /*time_step=*/0.001);
+      multibody::AddMultibodyPlantSceneGraph(&builder, /*time_step=*/0.001); // originally set to 0.001
+      // when set to 0, we let the integrator choose its own time step
 
   multibody::Parser parser(&plant, &scene_graph);
   parser.package_map().AddPackageXml(package_xml_path);
@@ -47,30 +51,26 @@ int main(int argc, char* argv[]) {
   // --------------------------------------------------------------------------
   // Add torque actuators for the seven arm joints BEFORE finalizing
   // --------------------------------------------------------------------------
-  // Torque limits from the URDF <limit effort="…"> tags
-  const std::unordered_map<std::string, double> kEffort = {
+  // Torque limits from the URDF <limit effort="…"> tag
+  struct JointSpec { std::string name; double effort; };
+
+  const std::vector<JointSpec> kActuators = {
     {"fer_joint1", 87.0}, {"fer_joint2", 87.0}, {"fer_joint3", 87.0},
-    {"fer_joint4", 87.0},                         // shoulder + elbow
-    {"fer_joint5", 12.0}, {"fer_joint6", 12.0}, {"fer_joint7", 12.0}  // wrist
+    {"fer_joint4", 87.0},
+    {"fer_joint5", 12.0}, {"fer_joint6", 12.0}, {"fer_joint7", 12.0},
+    {"fer_finger_joint1", 100.0}, {"fer_finger_joint2", 100.0}
   };
 
-  for (const auto& [name, limit] : kEffort) {
-    const auto& joint =
-      plant.GetJointByName<multibody::RevoluteJoint>(name, robot);
-
-    // create an actuator named "<joint>_act" with the specified torque limit
-    plant.AddJointActuator(name + "_act", joint, limit);
-  }
-
-  // Add a fixed joint for the gripper
-  const std::vector<std::string> kGripperJoints{
-      "fer_finger_joint1", "fer_finger_joint2"};
-    
-  for (const std::string& name : kGripperJoints) {
-      const auto& joint =
-          plant.GetJointByName<multibody::PrismaticJoint>(name, robot);
-  
-      plant.AddJointActuator(name + "_act", joint);
+  for (const auto& spec : kActuators) {
+    if (spec.name.find("finger") == std::string::npos) {
+      const auto& j =
+          plant.GetJointByName<multibody::RevoluteJoint>(spec.name, robot);
+      plant.AddJointActuator(spec.name + "_act", j, spec.effort);
+    } else {
+      const auto& j =
+          plant.GetJointByName<multibody::PrismaticJoint>(spec.name, robot);
+      plant.AddJointActuator(spec.name + "_act", j, spec.effort);
+    }
   }
 
   plant.Finalize();
@@ -80,7 +80,7 @@ int main(int argc, char* argv[]) {
   // --------------------------------------------------------------------------
   const int n = plant.num_positions(robot);      // n == 9
   VectorXd q_des = VectorXd::Zero(n);
-  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/2, 0.0, 0.0;
+  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/4 + 0.1, 0.0, 0.0;
 
   VectorXd v_des = VectorXd::Zero(plant.num_velocities(robot));   // also 9
 
@@ -92,42 +92,51 @@ int main(int argc, char* argv[]) {
   // Inverse-Dynamics Controller (PD + gravity)
   // P error goes to zero due to Krasovski-LaSalle invariance principle
   // --------------------------------------------------------------------------
-  VectorXd kp   = VectorXd::Zero(n);
-  VectorXd kd   = VectorXd::Zero(n);
-  VectorXd ki   = VectorXd::Zero(n);
+  // ----------------------------------------------------------------------
+  //  PD block  (vector-form constructor: Kp, Ki, Kd)
+  // ----------------------------------------------------------------------
+  VectorXd kp = VectorXd::Zero(n);
+  VectorXd kd = VectorXd::Zero(n);
+  VectorXd ki = VectorXd::Zero(n);          // 0 → no integral
 
-  kp.setConstant(200.0);
-  kd = 2.0 * kp.cwiseSqrt();
-  ki.setConstant(40.0); // 0.2·kp
+  kp.head<7>().setConstant(40.0);
+  kd.head<7>() = 2.0 * kp.head<7>().cwiseSqrt();
 
+  auto* pd =
+      builder.AddSystem<systems::controllers::PidController<double>>(kp, ki, kd);
 
-  auto* id_controller =
-      builder.AddSystem<systems::controllers::InverseDynamicsController<double>>(
-          plant, kp, kd, ki, robot);
+  builder.Connect(plant.get_state_output_port(),          // x = [q; v]
+                  pd->get_input_port_estimated_state());
+  
+  builder.Connect(desired_source->get_output_port(),      // [q_d; v_d]
+                  pd->get_input_port_desired_state());
 
-  const int nv = plant.num_velocities(robot);
-  auto* zero_accel = builder.AddSystem<systems::ConstantVectorSource<double>>(
-                      VectorXd::Zero(nv));
+  // ----------------------------------------------------------------------
+  //  Gravity-compensation block      g̃(q)
+  // ----------------------------------------------------------------------
+  using systems::controllers::InverseDynamics;
+  auto* g_comp =
+      builder.AddSystem<InverseDynamics<double>>(
+          &plant,
+          InverseDynamics<double>::InverseDynamicsMode::kGravityCompensation);
 
-  // Wire state -> controller
   builder.Connect(plant.get_state_output_port(),
-                  id_controller->get_input_port_estimated_state());
+                  g_comp->get_input_port_estimated_state());
 
-  // Wire desired state -> controller
-  builder.Connect(desired_source->get_output_port(),
-                  id_controller->get_input_port_desired_state());
+  // ----------------------------------------------------------------------
+  //  Sum:   τ = τ_PD  +  g̃(q)
+  // ----------------------------------------------------------------------
+  auto* sum = builder.AddSystem<systems::Adder<double>>(2, n);
 
-  builder.Connect(zero_accel->get_output_port(),
-                id_controller->get_input_port_desired_acceleration());
-
-  // Controller output tau -> plant actuation
-  builder.Connect(id_controller->get_output_port_control(),
-                  plant.get_actuation_input_port());
-
+  builder.Connect(pd   ->get_output_port(), sum->get_input_port(0));
+  builder.Connect(g_comp->get_output_port(), sum->get_input_port(1));
+  builder.Connect(sum->get_output_port(), plant.get_actuation_input_port());
   // --------------------------------------------------------------------------
   // Visualisation and simulation
   // --------------------------------------------------------------------------
   visualization::AddDefaultVisualization(&builder);
+  auto* logger = LogVectorOutput(
+    plant.get_state_output_port(), &builder,  /*publish_period=*/0.01);
 
   auto diagram = builder.Build();
   systems::Simulator<double> simulator(*diagram);
@@ -149,7 +158,20 @@ int main(int argc, char* argv[]) {
   // start when enter is pressed
   std::cout << "Press enter to start simulation..." << std::endl;
   std::cin.get();
-  simulator.AdvanceTo(10.0);
+  simulator.AdvanceTo(20.0);
 
+  // Get the plant’s sub-context from the diagram context you already have
+  const auto& plant_ctx =
+      plant.GetMyContextFromRoot(root_context);
+
+  const auto& tau =
+      plant.get_actuation_input_port().Eval(plant_ctx);
+  
+  std::cout << "Final tau vector: " << tau.transpose() << std::endl;
+
+  std::cout << "Final q error: "
+          << (plant.GetPositions(plant_context, robot) - q_des).transpose()
+          << std::endl;
+ logger->data();
   return 0;
 }
