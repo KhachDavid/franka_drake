@@ -24,13 +24,12 @@
         <mesh filename="package://franka_description/meshes/robot_arms/fer/visual/link0.dae"/>
       </geometry>
     </visual>
-    <!-- 
+    
     <collision name="fer_link0_collision">
       <geometry>
-        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link0.stl"/>
+        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link0.obj"/>
       </geometry>
     </collision>
-    -->
     <inertial>
       <origin rpy="0 0 0" xyz="-0.0172 0.0004 0.0745"/>
       <mass value="2.3966"/>
@@ -44,13 +43,11 @@
         <mesh filename="package://franka_description/meshes/robot_arms/fer/visual/link1.dae"/>
       </geometry>
     </visual>
-    <!--
     <collision name="fer_link1_collision">
       <geometry>
-        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link1.stl"/>
+        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link1.obj"/>
       </geometry>
     </collision>
-    -->
     <inertial>
       <origin rpy="0 0 0" xyz="0.00033 -0.02204 -0.04762"/>
       <mass value="2.7907"/>
@@ -73,13 +70,11 @@
         <mesh filename="package://franka_description/meshes/robot_arms/fer/visual/link2.dae"/>
       </geometry>
     </visual>
-    <!--
     <collision name="fer_link2_collision">
       <geometry>
-        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link2.stl"/>
+        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link2.obj"/>
       </geometry>
     </collision>
-    -->
     <inertial>
       <origin rpy="0 0 0" xyz="0.00038 -0.09211 0.01908"/>
       <mass value="2.542"/>
@@ -102,13 +97,11 @@
         <mesh filename="package://franka_description/meshes/robot_arms/fer/visual/link3.dae"/>
       </geometry>
     </visual>
-    <!--
     <collision name="fer_link3_collision">
       <geometry>
-        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link3.stl"/>
+        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link3.obj"/>
       </geometry>
     </collision>
-    -->
     <inertial>
       <origin rpy="0 0 0" xyz="0.05152 0.01696 -0.02971"/>
       <mass value="2.2513"/>
@@ -131,13 +124,11 @@
         <mesh filename="package://franka_description/meshes/robot_arms/fer/visual/link4.dae"/>
       </geometry>
     </visual>
-    <!--
     <collision name="fer_link4_collision">
       <geometry>
-        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link4.stl"/>
+        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link4.obj"/>
       </geometry>
     </collision>
-    -->
     <inertial>
       <origin rpy="0 0 0" xyz="-0.05113 0.05825 0.01698"/>
       <mass value="2.2037"/>
@@ -160,13 +151,11 @@
         <mesh filename="package://franka_description/meshes/robot_arms/fer/visual/link5.dae"/>
       </geometry>
     </visual>
-    <!--
     <collision name="fer_link5_collision">
       <geometry>
-        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link5.stl"/>
+        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link5.obj"/>
       </geometry>
     </collision>
-    -->
     <inertial>
       <origin rpy="0 0 0" xyz="-0.00005 0.03730 -0.09280"/>
       <mass value="2.2855"/>
@@ -189,13 +178,11 @@
         <mesh filename="package://franka_description/meshes/robot_arms/fer/visual/link6.dae"/>
       </geometry>
     </visual>
-    <!--
     <collision name="fer_link6_collision">
       <geometry>
-        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link6.stl"/>
+        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link6.obj"/>
       </geometry>
     </collision>
-    -->
     <inertial>
       <origin rpy="0 0 0" xyz="0.06572 -0.00371 0.00153"/>
       <mass value="1.353"/>
@@ -218,13 +205,11 @@
         <mesh filename="package://franka_description/meshes/robot_arms/fer/visual/link7.dae"/>
       </geometry>
     </visual>
-    <!--
     <collision name="fer_link7_collision">
       <geometry>
-        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link7.stl"/>
+        <mesh filename="package://franka_description/meshes/robot_arms/fer/collision/link7.obj"/>
       </geometry>
     </collision>
-    -->
     <inertial>
       <origin rpy="0 0 0" xyz="0.00089 -0.00044 0.05491"/>
       <mass value="0.35973"/>
@@ -258,13 +243,11 @@
         <mesh filename="package://franka_description/meshes/robot_ee/franka_hand_white/visual/hand.dae"/>
       </geometry>
     </visual>
-    <!-- 
     <collision name="fer_hand_collision">
       <geometry>
-        <mesh filename="package://franka_description/meshes/robot_ee/franka_hand_white/collision/hand.stl"/>
+        <mesh filename="package://franka_description/meshes/robot_ee/franka_hand_white/collision/hand.obj"/>
       </geometry>
     </collision> 
-    -->
     <inertial>
       <origin rpy="0 0 0" xyz="-0.01 0 0.03"/>
       <mass value="0.73"/>
