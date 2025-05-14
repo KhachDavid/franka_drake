@@ -1,5 +1,34 @@
 # Simulating Franka FER3 Control Box in Drake
 
+## Week of May 12
+
+This week I implemented PD setpoint control with gravity compensation. For a robot with no friction at the joints, $\theta{e}$ converges to 0 when using this controller.
+
+```cpp
+  // ----------------------------------------------------------------------
+  //  Sum:   τ = τ_PD  +  g̃(q)
+  // ----------------------------------------------------------------------
+  auto* sum = builder.AddSystem<systems::Adder<double>>(2, n);
+
+  builder.Connect(pd   ->get_output_port(), sum->get_input_port(0));
+  builder.Connect(g_comp->get_output_port(), sum->get_input_port(1));
+  builder.Connect(sum->get_output_port(), plant.get_actuation_input_port());
+
+```
+
+In the example above torque is calculate by adding the PD and gravity components. When no desired position is indicated, the robot is perfect still at a given `q0`.
+
+This controller was put into use for a task of moving joint 7 by 0.1 radians, going from 0.8 to 0.7. Below is a graph generated using drake's vector log sink.
+
+![joint7_test_08_to_07](https://github.com/user-attachments/assets/43112331-d42c-40fb-907a-bd3e7f5fcd04)
+
+Blue curve (position) – Joint 7 starts at 0.8 rad, crosses the 0.7 rad set-point around sample = 11 000, then keeps drifting down.
+
+Orange curve (velocity) – Small negative velocity the whole time.
+
+
+
+
 ## Week of May 5
 
 This week, the goal is to understand libfranka inputs and experiment with the anti gravity component of franka joints in drake. In addition, last week I created technical debt by uncommenting collision stl files in the URDF. This week I used blender to convert them to `.obj` format, as required by Drake. This went smoothly and the files were pushed as a fork of franka_description and can be found [here](https://github.com/KhachDavid/franka_description).
