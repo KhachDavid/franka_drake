@@ -70,17 +70,17 @@ int main(int argc, char* argv[]) {
       const auto& joint =
           plant.GetJointByName<multibody::PrismaticJoint>(name, robot);
   
-      plant.AddJointActuator(name + "_act", joint);   // ← change here
+      plant.AddJointActuator(name + "_act", joint);
   }
 
   plant.Finalize();
 
   // --------------------------------------------------------------------------
-  // Desired posture source (q*, v*=0)  --------
+  // Desired posture source (q, v=0)  --------
   // --------------------------------------------------------------------------
   const int n = plant.num_positions(robot);      // n == 9
   VectorXd q_des = VectorXd::Zero(n);
-  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/4, 0.0, 0.0;
+  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/2, 0.0, 0.0;
 
   VectorXd v_des = VectorXd::Zero(plant.num_velocities(robot));   // also 9
 
@@ -98,7 +98,7 @@ int main(int argc, char* argv[]) {
 
   kp.setConstant(200.0);
   kd = 2.0 * kp.cwiseSqrt();
-  ki.setConstant(40.0);           // 0.2·kp
+  ki.setConstant(40.0); // 0.2·kp
 
 
   auto* id_controller =
@@ -149,7 +149,7 @@ int main(int argc, char* argv[]) {
   // start when enter is pressed
   std::cout << "Press enter to start simulation..." << std::endl;
   std::cin.get();
-  simulator.AdvanceTo(10.0);             // run 10 s
+  simulator.AdvanceTo(10.0);
 
   return 0;
 }
