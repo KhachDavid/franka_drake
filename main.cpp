@@ -80,7 +80,7 @@ int main(int argc, char* argv[]) {
   // --------------------------------------------------------------------------
   const int n = plant.num_positions(robot);      // n == 9
   VectorXd q_des = VectorXd::Zero(n);
-  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/4 + 0.1, 0.0, 0.0;
+  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/4 - 0.1, 0.0, 0.0;
 
   VectorXd v_des = VectorXd::Zero(plant.num_velocities(robot));   // also 9
 
@@ -97,7 +97,7 @@ int main(int argc, char* argv[]) {
   // ----------------------------------------------------------------------
   VectorXd kp = VectorXd::Zero(n);
   VectorXd kd = VectorXd::Zero(n);
-  VectorXd ki = VectorXd::Zero(n);          // 0 → no integral
+  VectorXd ki = VectorXd::Zero(n);
 
   kp.head<7>().setConstant(40.0);
   kd.head<7>() = 2.0 * kp.head<7>().cwiseSqrt();
@@ -135,8 +135,13 @@ int main(int argc, char* argv[]) {
   // Visualisation and simulation
   // --------------------------------------------------------------------------
   visualization::AddDefaultVisualization(&builder);
-  auto* logger = LogVectorOutput(
-    plant.get_state_output_port(), &builder,  /*publish_period=*/0.01);
+
+  const double kLogPeriod = 0.01;           // 10 ms
+  auto* sink = builder.AddSystem<
+                drake::systems::VectorLogSink<double>>(
+                plant.get_state_output_port().size());
+  // wire port → sink
+  builder.Connect(plant.get_state_output_port(), sink->get_input_port());
 
   auto diagram = builder.Build();
   systems::Simulator<double> simulator(*diagram);
@@ -172,6 +177,19 @@ int main(int argc, char* argv[]) {
   std::cout << "Final q error: "
           << (plant.GetPositions(plant_context, robot) - q_des).transpose()
           << std::endl;
- logger->data();
+
+  const auto& sink_context =
+    sink->GetMyContextFromRoot(root_context);      // sink’s sub-context
+
+const auto& log = sink->GetLog(sink_context);     // note the argument
+
+std::cout << "Logged " << log.num_samples()
+          << " samples of dimension " << log.data().rows() << ".\n";
+
+          // print all 
+for (int i = 0; i < log.num_samples(); ++i) {
+    std::cout << log.data().col(i).transpose() << std::endl;
+}
+
   return 0;
 }
