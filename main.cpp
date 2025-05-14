@@ -96,8 +96,10 @@ int main(int argc, char* argv[]) {
   VectorXd kd   = VectorXd::Zero(n);
   VectorXd ki   = VectorXd::Zero(n);
 
-  kp.setConstant(10.0);     // arm joints
-  kd = 2.0 * kp.cwiseSqrt(); // critical damping
+  kp.setConstant(200.0);
+  kd = 2.0 * kp.cwiseSqrt();
+  ki.setConstant(40.0);           // 0.2·kp
+
 
   auto* id_controller =
       builder.AddSystem<systems::controllers::InverseDynamicsController<double>>(
@@ -119,7 +121,7 @@ int main(int argc, char* argv[]) {
                 id_controller->get_input_port_desired_acceleration());
 
   // Controller output tau -> plant actuation
-  builder.Connect(id_controller->get_output_port(0), // 0 is generalized forces 
+  builder.Connect(id_controller->get_output_port_control(),
                   plant.get_actuation_input_port());
 
   // --------------------------------------------------------------------------
@@ -131,16 +133,22 @@ int main(int argc, char* argv[]) {
   systems::Simulator<double> simulator(*diagram);
   simulator.set_target_realtime_rate(1.0);
 
-  // Set initial state to something far from the goal (optional)
+  // Set initial state to something far from the goal
   auto& root_context   = simulator.get_mutable_context();
   auto& plant_context  = plant.GetMyMutableContextFromRoot(&root_context);
   VectorXd q0 = q_des;
-  q0.head<7>().array() += 0.5;           // 0.5 rad offset for demo
+
+  q0 << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/4, 0.0, 0.0;
+  
+
   plant.SetPositions(&plant_context, robot, q0);
   plant.SetVelocities(&plant_context, robot,
                       VectorXd::Zero(plant.num_velocities(robot)));
 
   simulator.Initialize();
+  // start when enter is pressed
+  std::cout << "Press enter to start simulation..." << std::endl;
+  std::cin.get();
   simulator.AdvanceTo(10.0);             // run 10 s
 
   return 0;
