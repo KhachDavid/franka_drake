@@ -47,27 +47,31 @@ int main(int argc, char* argv[]) {
   // --------------------------------------------------------------------------
   // Add torque actuators for the seven arm joints BEFORE finalizing
   // --------------------------------------------------------------------------
-  const std::vector<std::string> kArmJoints{
-      "fer_joint1", "fer_joint2", "fer_joint3",
-      "fer_joint4", "fer_joint5", "fer_joint6", "fer_joint7"};
+  // Torque limits from the URDF <limit effort="…"> tags
+  const std::unordered_map<std::string, double> kEffort = {
+    {"fer_joint1", 87.0}, {"fer_joint2", 87.0}, {"fer_joint3", 87.0},
+    {"fer_joint4", 87.0},                         // shoulder + elbow
+    {"fer_joint5", 12.0}, {"fer_joint6", 12.0}, {"fer_joint7", 12.0}  // wrist
+  };
 
-  for (const std::string& name : kArmJoints) {
+  for (const auto& [name, limit] : kEffort) {
     const auto& joint =
-        plant.GetJointByName<multibody::RevoluteJoint>(name, robot);
+      plant.GetJointByName<multibody::RevoluteJoint>(name, robot);
 
-    plant.AddJointActuator(name + "_act", joint, );   // ← change here
+    // create an actuator named "<joint>_act" with the specified torque limit
+    plant.AddJointActuator(name + "_act", joint, limit);
   }
 
-    // Add a fixed joint for the gripper
-    const std::vector<std::string> kGripperJoints{
-        "fer_finger_joint1", "fer_finger_joint2"};
+  // Add a fixed joint for the gripper
+  const std::vector<std::string> kGripperJoints{
+      "fer_finger_joint1", "fer_finger_joint2"};
     
-    for (const std::string& name : kGripperJoints) {
-        const auto& joint =
-            plant.GetJointByName<multibody::PrismaticJoint>(name, robot);
-    
-        plant.AddJointActuator(name + "_act", joint);   // ← change here
-    }
+  for (const std::string& name : kGripperJoints) {
+      const auto& joint =
+          plant.GetJointByName<multibody::PrismaticJoint>(name, robot);
+  
+      plant.AddJointActuator(name + "_act", joint);   // ← change here
+  }
 
   plant.Finalize();
 
@@ -92,7 +96,7 @@ int main(int argc, char* argv[]) {
   VectorXd kd   = VectorXd::Zero(n);
   VectorXd ki   = VectorXd::Zero(n);
 
-  kp.setConstant(100.0);     // arm joints
+  kp.setConstant(10.0);     // arm joints
   kd = 2.0 * kp.cwiseSqrt(); // critical damping
 
   auto* id_controller =
@@ -131,7 +135,7 @@ int main(int argc, char* argv[]) {
   auto& root_context   = simulator.get_mutable_context();
   auto& plant_context  = plant.GetMyMutableContextFromRoot(&root_context);
   VectorXd q0 = q_des;
-  q0.head<7>.array() += 0.5;           // 0.5 rad offset for demo
+  q0.head<7>().array() += 0.5;           // 0.5 rad offset for demo
   plant.SetPositions(&plant_context, robot, q0);
   plant.SetVelocities(&plant_context, robot,
                       VectorXd::Zero(plant.num_velocities(robot)));
