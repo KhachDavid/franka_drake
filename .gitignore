@@ -1,2 +1,4 @@
 build/
 README.pdf
+log_*
+*.png
