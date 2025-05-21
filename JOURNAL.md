@@ -1,5 +1,28 @@
 # Simulating Franka FER3 Control Box in Drake
 
+## Week of May 19
+
+The goal was to implement a 1 kHz controller that ensured the stability of Franka. Initially, I attempted to achieve this with no PID and only gravity compensation. The arm stabilized only when using a really small time step. This is not the best idea, since the simulation of 20 seconds took over 5 minutes.
+
+![no_pd_0_00001](https://github.com/user-attachments/assets/0692279a-873e-4fe9-bddb-e92be8c31494)
+
+With no PID control, and a smaller timestep of 1kHz, Drake's gravity compensation solver is unable to keep up. This was the case even after providing a hypothetical unlimited torque to each motor. Another approach was switching the default implicit euler integration to Runge Kutta, but that does not make a difference. With all of these methods, the drift was always similar to the graph below:
+
+![joint7_test_08_to_07](https://github.com/user-attachments/assets/43112331-d42c-40fb-907a-bd3e7f5fcd04)
+
+Therefore, PID control was introduced to keep the robot static. 
+
+P = 16000
+![static_p16000](https://github.com/user-attachments/assets/b02502c3-4a53-459a-a082-9eb27310e175)
+
+P = 16000, zoomed in, joint 7 small error
+![static_p16000_joint7](https://github.com/user-attachments/assets/0606a7b0-1889-49ed-b63c-9b6077ec3d43)
+
+P = 5500, zoomed in, joint 7 slightly larger error
+![static_p5500](https://github.com/user-attachments/assets/adf36f1c-4707-42ce-bd88-98979a730bfd)
+
+
+
 ## Week of May 12
 
 This week I implemented PD setpoint control with gravity compensation. For a robot with no friction at the joints, $\theta{e}$ converges to 0 when using this controller.
