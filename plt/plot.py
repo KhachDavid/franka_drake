@@ -44,7 +44,7 @@ dictionary = {
 for col in dictionary.keys():
     plt.plot(log_array[:, col], label=f'{dictionary[col]}', alpha=0.7)
 plt.legend(loc='upper right', ncol=2)
-plt.title('Time Step: 0.00001')
+plt.title('Time Step: 0.01, with PID')
 plt.xlabel('Sample Index')
 plt.ylabel('rad')
 plt.grid(True)

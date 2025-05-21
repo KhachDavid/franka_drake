@@ -16,6 +16,8 @@
 #include <drake/systems/primitives/constant_vector_source.h>
 #include <drake/systems/primitives/vector_log_sink.h>
 #include <drake/visualization/visualization_config_functions.h>
+#include <drake/systems/analysis/runge_kutta5_integrator.h> 
+#include <drake/systems/analysis/simulator_config.h>          // ResetIntegratorFromFlags
 
 using namespace drake;
 using Eigen::VectorXd;
@@ -73,8 +75,8 @@ int main(int argc, char* argv[]) {
   //---------------------------------------------------------------------------
   const std::vector<std::pair<std::string, double>> kDamp = {
       {"fer_joint1", 0.05}, {"fer_joint2", 0.05}, {"fer_joint3", 0.05},
-      {"fer_joint4", 0.05}, {"fer_joint5", 0.05}, {"fer_joint6", 0.05},
-      {"fer_joint7", 0.05},
+      {"fer_joint4", 0.05}, {"fer_joint5", 0.35}, {"fer_joint6", 0.35},
+      {"fer_joint7", 0.35},
       {"fer_finger_joint1", 1.0}, {"fer_finger_joint2", 1.0}};
 
   for (const auto& [name, d] : kDamp) {
@@ -113,11 +115,11 @@ int main(int argc, char* argv[]) {
                   g_comp->get_input_port_estimated_state());
 
   //---------------------------------------------------------------------------
-  // Tiny PD controller to cancel discrete bias
+  // PD controller
   //---------------------------------------------------------------------------
-  VectorXd kp = VectorXd::Constant(n, 50.0);   // very small gains
-  VectorXd kd = VectorXd::Constant(n, 8.2);
-  VectorXd ki = VectorXd::Constant(n, 0.4);
+  VectorXd kp = VectorXd::Constant(n, 16000.0);
+  VectorXd kd = VectorXd::Zero(n);
+  VectorXd ki = VectorXd::Zero(n);
 
   auto* pid =
       builder.AddSystem<systems::controllers::PidController<double>>(kp, ki, kd);
@@ -145,6 +147,10 @@ int main(int argc, char* argv[]) {
   auto diagram = builder.Build();
   systems::Simulator<double> simulator(*diagram);
   simulator.set_target_realtime_rate(1.0);
+  auto& rk5 = simulator.reset_integrator<
+    drake::systems::RungeKutta5Integrator<double>>();
+  rk5.set_target_accuracy(1e-10);
+  rk5.set_maximum_step_size(0.001);
 
   // Initial state
   auto& root_context  = simulator.get_mutable_context();
