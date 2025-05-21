@@ -12,6 +12,9 @@ With no P control, and a smaller timestep of 1kHz, Drake's gravity compensation 
 
 Therefore, P control was introduced to keep the robot static. 
 
+P = 26000
+![P26000](https://github.com/user-attachments/assets/84fbeaa0-ab5f-4fc0-b37e-c756c3924f06)
+
 P = 16000
 ![static_p16000](https://github.com/user-attachments/assets/b02502c3-4a53-459a-a082-9eb27310e175)
 
