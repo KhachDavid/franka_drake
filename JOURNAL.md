@@ -2,15 +2,15 @@
 
 ## Week of May 19
 
-The goal was to implement a 1 kHz controller that ensured the stability of Franka. Initially, I attempted to achieve this with no PID and only gravity compensation. The arm stabilized only when using a really small time step. This is not the best idea, since the simulation of 20 seconds took over 5 minutes.
+The goal was to implement a 1 kHz controller that ensured the stability of Franka. Initially, I attempted to achieve this with no P and only gravity compensation. The arm stabilized only when using a really small time step. This is not the best idea, since the simulation of 20 seconds took over 5 minutes.
 
 ![no_pd_0_00001](https://github.com/user-attachments/assets/0692279a-873e-4fe9-bddb-e92be8c31494)
 
-With no PID control, and a smaller timestep of 1kHz, Drake's gravity compensation solver is unable to keep up. This was the case even after providing a hypothetical unlimited torque to each motor. Another approach was switching the default implicit euler integration to Runge Kutta, but that does not make a difference. With all of these methods, the drift was always similar to the graph below:
+With no P control, and a smaller timestep of 1kHz, Drake's gravity compensation solver is unable to keep up. This was the case even after providing a hypothetical unlimited torque to each motor. Another approach was switching the default implicit euler integration to Runge Kutta, but that does not make a difference. With all of these methods, the drift was always similar to the graph below:
 
 ![joint7_test_08_to_07](https://github.com/user-attachments/assets/43112331-d42c-40fb-907a-bd3e7f5fcd04)
 
-Therefore, PID control was introduced to keep the robot static. 
+Therefore, P control was introduced to keep the robot static. 
 
 P = 16000
 ![static_p16000](https://github.com/user-attachments/assets/b02502c3-4a53-459a-a082-9eb27310e175)
