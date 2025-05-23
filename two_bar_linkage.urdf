@@ -1,0 +1,72 @@
+<?xml version="1.0" ?>
+<robot name="two_bar_linkage">
+
+  <!-- Link 1 -->
+  <link name="link1">
+    <visual>
+      <geometry>
+        <box size="1.0 0.05 0.05"/>
+      </geometry>
+      <origin xyz="0.5 0 0" rpy="0 0 0"/>
+      <material name="blue">
+        <color rgba="0 0 1 1"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="1.0 0.05 0.05"/>
+      </geometry>
+      <origin xyz="0.5 0 0" rpy="0 0 0"/>
+    </collision>
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.5 0 0" rpy="0 0 0"/>
+      <inertia 
+        ixx="0.000208" ixy="0.0"  ixz="0.0"
+        iyy="0.0833"   iyz="0.0"  izz="0.0833"/>
+    </inertial>
+  </link>
+
+  <!-- Link 2 -->
+  <link name="link2">
+    <visual>
+      <geometry>
+        <box size="1.0 0.05 0.05"/>
+      </geometry>
+      <origin xyz="0.5 0 0" rpy="0 0 0"/>
+      <material name="red">
+        <color rgba="1 0 0 1"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="1.0 0.05 0.05"/>
+      </geometry>
+      <origin xyz="0.5 0 0" rpy="0 0 0"/>
+    </collision>
+    <inertial>
+      <mass value="1.0"/>
+      <origin xyz="0.5 0 0" rpy="0 0 0"/>
+      <inertia 
+        ixx="0.000208" ixy="0.0"  ixz="0.0"
+        iyy="0.0833"   iyz="0.0"  izz="0.0833"/>
+    </inertial>
+  </link>
+
+  <!-- Revolute Joint between link1 and link2 -->
+  <joint name="joint1" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="1.0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="10.0" velocity="1.0" lower="-3.14" upper="3.14"/>
+  </joint>
+
+  <!-- Optional: fixed base joint -->
+  <joint name="base_joint" type="fixed">
+    <parent link="world"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+</robot>
