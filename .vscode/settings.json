@@ -70,7 +70,11 @@
       "semaphore": "cpp",
       "format": "cpp",
       "stdfloat": "cpp",
-      "__nullptr": "cpp"
+      "__nullptr": "cpp",
+      "any": "cpp",
+      "codecvt": "cpp",
+      "unordered_set": "cpp",
+      "typeindex": "cpp"
     }
   }
   
