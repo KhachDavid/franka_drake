@@ -1,5 +1,15 @@
 # Simulating Franka FER3 Control Box in Drake
 
+## Week of May 26
+
+Commanding a sudden torque drop to zero with a step function torque command. $t=4, \tau(t = 2.5) = 0, \tau_{max}=0.8$
+
+![torqueDropCutoff2 5Duration4 0Torque0 8nm](https://github.com/user-attachments/assets/1c30508b-5e17-4c97-8957-a688918242ab)
+
+Commanding a sudden torque drop to -0.1 with a step function torque command. $t=4, \tau(t = 2.5) = -0.1, \tau_{max}=-0.8$
+
+![torqueDropCutoff2 5Duration4 0Torque0 8nmSmallTorque](https://github.com/user-attachments/assets/24884591-1b76-40a9-a003-211812a8c40b)
+
 ## Week of May 19
 
 The goal was to implement a 1 kHz controller that ensured the stability of Franka. Initially, I attempted to achieve this with no P and only gravity compensation. The arm stabilized only when using a really small time step. This is not the best idea, since the simulation of 20 seconds took over 5 minutes.
