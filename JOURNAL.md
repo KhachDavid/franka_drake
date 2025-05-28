@@ -2,6 +2,10 @@
 
 ## Week of May 26
 
+I added a two bar linkage and it is able to hold on its own with manual torque
+
+![image](https://github.com/user-attachments/assets/c306cb2b-fb9c-4561-9231-677e73dadc00)
+
 Commanding a sudden torque drop to zero with a step function torque command. $t=4, \tau(t = 2.5) = 0, \tau_{max}=0.8$
 
 ![torqueDropCutoff2 5Duration4 0Torque0 8nm](https://github.com/user-attachments/assets/1c30508b-5e17-4c97-8957-a688918242ab)
