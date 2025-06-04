@@ -1,5 +1,14 @@
 # Simulating Franka FER3 Control Box in Drake
 
+## Week of June 2
+
+Assumption: PID gains are zero, so all we are feeding into the Franka is gravity‐compensation torque. Any tiny numerical error makes the arm "wander" and there's no P or D torque to pull it back, and so we see that low‐frequency wobble.
+
+![image](https://github.com/user-attachments/assets/d5c8ed01-9d0e-4757-948b-e85c69715480)
+
+![image](https://github.com/user-attachments/assets/07b4a912-ad8d-4ea9-b66f-219f53b5dc67)
+
+
 ## Week of May 26
 
 I added a two bar linkage and it is able to hold on its own with manual torque
