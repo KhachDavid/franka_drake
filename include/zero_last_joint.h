@@ -33,10 +33,12 @@ class ZeroLastJoint : public LeafSystem<double> {
     // Sanity check that input really is length 7:
     DRAKE_DEMAND(in.size() == 7);
     auto y = out->get_mutable_value();
-    for (int i = 0; i < 6; ++i) {
+    for (int i = 0; i < 7; ++i) {
       y(i) = in(i);
     }
-    y(6) = 0.0;  // force the 7th entry to zero
+    y(4) = 0;  // Force the fifth joint's torque to zero
+    y(6) = 0;  // Force the sixth joint's torque to zero
+    
   }
 };
 

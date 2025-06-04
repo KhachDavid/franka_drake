@@ -134,6 +134,11 @@ int main(int argc, char* argv[]) {
       (VectorXd(q_des.size() + v_des.size()) << q_des, v_des).finished());
 
   VectorXd kp = VectorXd::Zero(n), kd = VectorXd::Zero(n), ki = VectorXd::Zero(n);
+
+  kp << 0, 0,0,0,  0, 0, 0;
+  kd << 0,  0,  0,  0,   0,  0,  0;
+  ki << 0, 0, 0, 0, 0, 0, 0;
+
   auto* pid = builder.AddSystem<systems::controllers::PidController>(kp, ki, kd);
 
   // Wire: plant.state_output → PID’s estimated_state input
@@ -177,7 +182,7 @@ int main(int argc, char* argv[]) {
   // -------------------------------------------------------------
   auto diagram = builder.Build();
   systems::Simulator<double> sim(*diagram);
-  sim.set_target_realtime_rate(1.0);
+  //sim.set_target_realtime_rate(1.0);
 
   auto& rk = sim.reset_integrator<systems::RungeKutta5Integrator<double>>();
   rk.set_target_accuracy(1e-12);
@@ -190,8 +195,8 @@ int main(int argc, char* argv[]) {
   plant.SetVelocities(&plant_ctx, robot, v_des);
 
   sim.Initialize();
-  std::cout << "Running … press <Enter> to begin"; std::cin.get();
-  sim.AdvanceTo(20.0);
+  std::cout << "Running … press <Enter> to begin"; //std::cin.get();
+  sim.AdvanceTo(30.0);
 
   // Dump a few logged samples
   const auto& L = logger->GetLog(logger->GetMyContextFromRoot(sim.get_context()));

@@ -72,7 +72,7 @@ def parse_simulation_log(log_str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Parse a joint‐position+torque log and plot joint positions & torques over time."
+        description="Parse a joint-position+torque log and plot joint positions & torques over time."
     )
     parser.add_argument(
         "logfile",
@@ -97,7 +97,7 @@ def main():
         plt.plot(times, positions[:, joint_idx], label=f'Joint {joint_idx+1} Position')
     plt.xlabel('Time [s]')
     plt.ylabel('Position [rad]')
-    plt.title('Joint Positions Over Time')
+    plt.title(f'Joint Positions Over Time: {args.logfile}')
     plt.legend(loc='best', fontsize='small')
     plt.grid(True)
 
@@ -107,7 +107,7 @@ def main():
         plt.plot(times, torques[:, joint_idx], label=f'Joint {joint_idx+1} Torque')
     plt.xlabel('Time [s]')
     plt.ylabel('Torque [Nm]')
-    plt.title('Joint Torques Over Time')
+    plt.title(f'Joint Torques Over Time: {args.logfile}')
     plt.legend(loc='best', fontsize='small')
     plt.grid(True)
 
