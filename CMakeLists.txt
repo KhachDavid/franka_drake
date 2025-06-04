@@ -11,6 +11,9 @@ list(APPEND CMAKE_PREFIX_PATH "${DRAKE_DIR}")
 find_package(drake REQUIRED)
 
 add_executable(sim main.cpp)
+
+target_include_directories(sim PRIVATE "${PROJECT_SOURCE_DIR}/include")
+
 target_link_libraries(sim drake::drake)
 
 add_subdirectory(examples)
