@@ -21,6 +21,48 @@ kd <<  40,   40,   40,   20,    5,    5,    5;    // [Nm s/rad] D‐gains
 
 There is still a jitter since the joints do not have any damping in the above simulation
 
+Upon adding damping
+![image](https://github.com/user-attachments/assets/a428ea07-6599-4543-8b78-43f7b55d4d86)
+
+Then we make the damping a constant 5 for all joints.
+
+```cpp
+kp << 400,  400,  400,  200,   50,   150,   150;    // [Nm/rad] P‐gains
+kd <<  40,   40,   40,   20,    5,    15,    15;    // [Nm s/rad] D‐gains
+```
+With the gains above this is the graph we get
+![image](https://github.com/user-attachments/assets/05c87e04-b67a-4c86-b0c4-e3a81ee0c192)
+
+These methods seem to be too complicated for the purpose of letting franka stay still. I uncommented the troublesome joint 7 from the URDF and Drake managed to successfully keep Franka still with the `InverseController` and in `kGravityCompensation` mode. This was a cause to examine the last joint torque commands further.
+
+The reason Joint 7 torque still ramped up is that, in the home position `0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/4;`, the gravity‐compensation term for that last wrist joint is essentially zero. Since gravity exerts almost no moment about that axis at the chosen angle, the InverseDynamics block spits out almost zero, but not exactly zero. But because there is still a tiny numerical slip at each time‐step (and zero gravity feed‐forward), the error
+
+$e_{7}(t) = q_{7,des} - q_{7}(t)$
+
+grows slowly, to which the P term is winding up if present. If PID is not present, this error grows without blockers.
+
+### Why is $\tau_{gcomp,7} = 0$ at $q_{7} = \pi / 4$?
+
+Below is the URDF snipped for Franka joint 7
+```xml
+<joint name="fer_joint7" type="revolute">
+  <origin rpy="1.570796326794897 0 0" xyz="0.088 0 0"/>
+  <axis  xyz="0 0 1"/>
+  <inertial>
+     <origin rpy="0 0 0" xyz="0.00089 -0.00044  0.05491"/>
+     <mass value="0.35973"/>
+  </inertial>
+</joint>
+```
+
+Because of the `rpy="1.5708 0 0"` rotation, the joint 7 "axis" $(0,0,1)$ in the link 7 frame actually points nearly along the parent's $y$-axis. Meanwhile, the COM offset $(0.00089,-0.00044,0.05491)$ in link 7 coordinates is mapped (after the $90^\circ$ roll about $x$) to something like $(0.00089,-0.05491,-0.00044)$ in the parent frame. The only component of gravity that causes torque around the joint 7 axis is the COM's tiny $x$-offset (approximately $0.00089\ \mathrm{m}$). Numerically,
+
+$\tau_{gc,7} = (r_{\mathrm{com}} \times (0,0,-m\,g)) \cdot a^7 \approx 0.00089 \times 0.3597 \times 9.81 \approx 0.003\ \mathrm{Nm},$
+
+which is effectively zero once you round to the nearest hundredth. If you tried a different $q_7$ where the COM has a larger lever arm about the joint axis, you would see a nonzero $\tau_{gc,7}$.
+
+
+
 ## Week of May 26
 
 I added a two bar linkage and it is able to hold on its own with manual torque
