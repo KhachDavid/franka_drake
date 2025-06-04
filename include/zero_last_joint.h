@@ -17,11 +17,11 @@ class ZeroLastJoint : public LeafSystem<double> {
 
   ZeroLastJoint() {
     // One input port: a 7-vector (gravity-comp torque)
-    this->DeclareVectorInputPort("tau_in", BasicVector<double>(7));
+    this->DeclareVectorInputPort("tau_in", BasicVector<double>(6));
     // One output port: a 7-vector (modified gravity-comp torque)
     this->DeclareVectorOutputPort(
         "tau_out",
-        BasicVector<double>(7),
+        BasicVector<double>(6),
         &ZeroLastJoint::CopyAndZeroLast);
   }
 

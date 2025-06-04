@@ -5,6 +5,8 @@ import matplotlib.pyplot as plt
 import re
 import sys
 
+NUM_JOINTS = 6
+
 def parse_simulation_log(log_str):
     """
     Parses simulation log text into three NumPy arrays:
@@ -28,7 +30,7 @@ def parse_simulation_log(log_str):
     while i < len(lines):
         line = lines[i].strip()
         # Identify a “position” line by checking for 8 tokens
-        if not line.startswith("tau") and len(line.split()) == 8:
+        if not line.startswith("tau") and len(line.split()) == NUM_JOINTS + 1:
             parts = line.split()
             try:
                 t = float(parts[0])
@@ -51,11 +53,11 @@ def parse_simulation_log(log_str):
                 m = re.search(r"=\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)", tau_line)
                 if m:
                     torque_vals.append(float(m.group(1)))
-            if len(torque_vals) == 7:
+            if len(torque_vals) == NUM_JOINTS:
                 torques.append(torque_vals)
             else:
                 # If we didn’t find exactly 7 torques, pad with NaNs
-                torque_vals += [np.nan] * (7 - len(torque_vals))
+                torque_vals += [np.nan] * (NUM_JOINTS - len(torque_vals))
                 torques.append(torque_vals)
 
             # Move index past this block (1 pos line + 7 torque lines)

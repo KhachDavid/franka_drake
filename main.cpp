@@ -99,7 +99,7 @@ int main(int argc, char* argv[]) {
   // -------------------------------------------------------------
   const int n = plant.num_positions(robot);
   VectorXd q_des(n), v_des(plant.num_velocities(robot));
-  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/4;
+  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2;
   v_des.setZero();  // all velocities = 0
 
   // -------------------------------------------------------------
