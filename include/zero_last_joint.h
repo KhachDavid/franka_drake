@@ -31,13 +31,11 @@ class ZeroLastJoint : public LeafSystem<double> {
                        BasicVector<double>* out) const {
     const auto& in = this->get_input_port(0).Eval(context);
     // Sanity check that input really is length 7:
-    DRAKE_DEMAND(in.size() == 7);
+    DRAKE_DEMAND(in.size() == 6);
     auto y = out->get_mutable_value();
-    for (int i = 0; i < 7; ++i) {
+    for (int i = 0; i < 6; ++i) {
       y(i) = in(i);
     }
-    y(4) = 0;  // Force the fifth joint's torque to zero
-    y(6) = 0;  // Force the sixth joint's torque to zero
     
   }
 };

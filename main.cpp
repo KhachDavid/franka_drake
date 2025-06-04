@@ -69,7 +69,6 @@ int main(int argc, char* argv[]) {
       {"fer_joint4", 87},
       {"fer_joint5", 12},
       {"fer_joint6", 87},
-      {"fer_joint7", 87},
   };
   for (const auto& a : act) {
     const auto& joint =
@@ -87,7 +86,6 @@ int main(int argc, char* argv[]) {
       {"fer_joint4", 22.0},
       {"fer_joint5", 11.0},
       {"fer_joint6", 11.0},
-      {"fer_joint7", 11.0},
   };
   for (const auto& [name, d] : damp) {
     plant.GetMutableJointByName<multibody::RevoluteJoint>(name, robot)
@@ -135,9 +133,9 @@ int main(int argc, char* argv[]) {
 
   VectorXd kp = VectorXd::Zero(n), kd = VectorXd::Zero(n), ki = VectorXd::Zero(n);
 
-  kp << 0, 0,0,0,  0, 0, 0;
-  kd << 0,  0,  0,  0,   0,  0,  0;
-  ki << 0, 0, 0, 0, 0, 0, 0;
+  kp << 0, 0,0,0,  0, 0;
+  kd << 0,  0,  0,  0,   0,  0;
+  ki << 0, 0, 0, 0, 0, 0;
 
   auto* pid = builder.AddSystem<systems::controllers::PidController>(kp, ki, kd);
 
@@ -203,7 +201,7 @@ int main(int argc, char* argv[]) {
   for (int i = 0; i < L.num_samples(); i += 200) {
     std::cout << L.sample_times()[i] << "  "
               << L.data().col(i).head(n).transpose() << "\n";
-    for (int j = 0; j < 7; ++j) {
+    for (int j = 0; j < 6; ++j) {
       std::cout << "  tau " << (j + 1) << " = "
                 << torque_logger->GetLog(
                        torque_logger->GetMyContextFromRoot(sim.get_context()))
