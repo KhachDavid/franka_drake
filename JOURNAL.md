@@ -8,6 +8,18 @@ Assumption: PID gains are zero, so all we are feeding into the Franka is gravity
 
 ![image](https://github.com/user-attachments/assets/07b4a912-ad8d-4ea9-b66f-219f53b5dc67)
 
+Afterwards, we add a PD controller. There is no need for I at the moment, since this is what gcomp is achieving analytically.
+
+![image](https://github.com/user-attachments/assets/1aa36ba7-c82b-4475-9c08-0389c8196b73)
+
+In the above example we are running PD controller with the following gains
+
+```cpp
+kp << 400,  400,  400,  200,   50,   50,   50;    // [Nm/rad] P‐gains
+kd <<  40,   40,   40,   20,    5,    5,    5;    // [Nm s/rad] D‐gains
+```
+
+There is still a jitter since the joints do not have any damping in the above simulation
 
 ## Week of May 26
 
