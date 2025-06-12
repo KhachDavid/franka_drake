@@ -6,10 +6,11 @@
 Clone the following repo into `~/ws/franka/src/franka_description`. Make sure you are on the panda branch. 
 
 ```
-git clone https://github.com/m-elwin/franka_description
+# This is a fork thta adds the appropriate obj files to ensure compatibility with drake
+git clone https://github.com/KhachDavid/franka_description
 ```
 
-#### 2. Install Dranka
+#### 2. Install Drake
 
 ```
 # Note that this is for Ubuntu 24.04 Noble Numbat
