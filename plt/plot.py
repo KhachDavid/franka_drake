@@ -7,65 +7,103 @@ import sys
 
 def parse_simulation_log(log_str):
     """
-    Parses simulation log text into three NumPy arrays:
-      • times:     shape (N,)
-      • positions: shape (N, 7)
-      • torques:   shape (N, 7)
+    Parses a simulation log string into NumPy arrays with arbitrary joint count.
 
-    Assumptions:
-    - Each “position” line has exactly 1 time + 7 joint positions (8 columns total).
-    - The next seven lines after each position line read:
+    Returns:
+        times (N,):     time stamps
+        positions (N,J): joint positions, where J is inferred from each position line
+        torques (N,J):   joint torques (missing values padded with NaN)
+
+    Expected log block format::
+
+        <time>  q1 q2 ... qJ
         tau 1 = <value>  [Nm]
         ...
-        tau 7 = <value>  [Nm]
+        tau J = <value>  [Nm]
+
+    The parser identifies a position line whenever the first token is a float
+    and the line does *not* start with "tau". The number of remaining tokens
+    determines the number of joints (J) for that sample.
     """
     lines = log_str.strip().splitlines()
-    times = []
-    positions = []
-    torques = []
+    times: list[float] = []
+    positions: list[list[float]] = []
+    torques: list[list[float]] = []
     i = 0
+
+    # Regex that matches a floating-point number (with optional sign / exponent)
+    float_re = r"[-+]?(?:[0-9]*\.[0-9]+|[0-9]+)(?:[eE][-+]?[0-9]+)?"
 
     while i < len(lines):
         line = lines[i].strip()
-        # Identify a “position” line by checking for 8 tokens
-        if not line.startswith("tau") and len(line.split()) == 8:
-            parts = line.split()
-            try:
-                t = float(parts[0])
-                q = [float(val) for val in parts[1:]]  # 7 joint positions
-            except ValueError:
-                # If conversion fails, skip
-                i += 1
-                continue
-
-            times.append(t)
-            positions.append(q)
-
-            # Parse the next 7 “tau” lines
-            torque_vals = []
-            for j in range(1, 8):
-                if i + j >= len(lines):
-                    break
-                tau_line = lines[i + j].strip()
-                # Extract the numeric torque value
-                m = re.search(r"=\s*([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)", tau_line)
-                if m:
-                    torque_vals.append(float(m.group(1)))
-            if len(torque_vals) == 7:
-                torques.append(torque_vals)
-            else:
-                # If we didn’t find exactly 7 torques, pad with NaNs
-                torque_vals += [np.nan] * (7 - len(torque_vals))
-                torques.append(torque_vals)
-
-            # Move index past this block (1 pos line + 7 torque lines)
-            i += 8
-        else:
+        if not line:
             i += 1
+            continue
 
-    if len(times) == 0:
+        # Attempt to parse the first token as time (float)
+        tokens = line.split()
+        try:
+            t_val = float(tokens[0])
+        except ValueError:
+            # Not a position line → skip
+            i += 1
+            continue
+
+        if line.startswith("tau") or len(tokens) < 2:
+            # Likely a malformed line, not a position entry
+            i += 1
+            continue
+
+        # We have a valid position line
+        time_stamp = t_val
+        try:
+            q_vals = [float(tok) for tok in tokens[1:]]
+        except ValueError:
+            # One of the joint values failed to parse; skip this line
+            i += 1
+            continue
+
+        num_joints = len(q_vals)
+        times.append(time_stamp)
+        positions.append(q_vals)
+
+        # Collect the following `num_joints` torque lines
+        joint_torques: list[float] = []
+        for j in range(1, num_joints + 1):
+            if i + j >= len(lines):
+                break  # Reached end of log unexpectedly
+            tau_line = lines[i + j].strip()
+            m = re.search(float_re, tau_line)
+            if m:
+                try:
+                    joint_torques.append(float(m.group(0)))
+                    continue
+                except ValueError:
+                    pass
+            # If we didn't append (failed to parse), append NaN placeholder
+            joint_torques.append(float('nan'))
+
+        # Pad with NaNs if fewer than expected were found
+        if len(joint_torques) < num_joints:
+            joint_torques += [float('nan')] * (num_joints - len(joint_torques))
+
+        torques.append(joint_torques)
+
+        # Advance index: 1 position line + num_joints torque lines
+        i += 1 + num_joints
+
+    if not times:
         print("Error: No valid position lines found in the log.", file=sys.stderr)
         sys.exit(1)
+
+    # Ensure all rows have the same length by padding with NaNs where necessary
+    max_joints = max(len(p) for p in positions)
+    for row in positions:
+        if len(row) < max_joints:
+            row += [np.nan] * (max_joints - len(row))
+    for row in torques:
+        if len(row) < max_joints:
+            row += [np.nan] * (max_joints - len(row))
 
     return np.array(times), np.array(positions), np.array(torques)
 

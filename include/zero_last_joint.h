@@ -36,9 +36,6 @@ class ZeroLastJoint : public LeafSystem<double> {
     for (int i = 0; i < 7; ++i) {
       y(i) = in(i);
     }
-    y(4) = 0;  // Force the fifth joint's torque to zero
-    y(6) = 0;  // Force the sixth joint's torque to zero
-    
   }
 };
 
