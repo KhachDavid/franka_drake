@@ -19,6 +19,7 @@
 #include <drake/systems/primitives/adder.h>
 #include <drake/systems/primitives/constant_vector_source.h>
 #include <drake/systems/primitives/vector_log_sink.h>
+#include <drake/systems/framework/leaf_system.h>
 
 // Drake visualization
 #include <drake/visualization/visualization_config_functions.h>
@@ -31,6 +32,31 @@
 
 using namespace drake;
 using Eigen::VectorXd;
+
+// Leaf system that outputs a torque vector whose last entry is set by a Meshcat slider.
+class Joint7TorqueSource final : public systems::LeafSystem<double> {
+ public:
+  Joint7TorqueSource(int num_act, std::shared_ptr<geometry::Meshcat> meshcat)
+      : num_act_(num_act), meshcat_(std::move(meshcat)) {
+    this->DeclareVectorOutputPort("tau7", num_act_,
+                                  &Joint7TorqueSource::CalcOutput);
+    if (num_act_ >= 7) {
+      meshcat_->AddSlider("tau7_cmd[Nm]", -1.0, 1.0, 0.01, 0.0);
+    }
+  }
+
+ private:
+  void CalcOutput(const systems::Context<double>&,
+                  systems::BasicVector<double>* output) const {
+    Eigen::VectorXd tau = Eigen::VectorXd::Zero(num_act_);
+    if (num_act_ >= 7) {
+      tau(num_act_ - 1) = meshcat_->GetSliderValue("tau7_cmd[Nm]");
+    }
+    output->SetFromVector(tau);
+  }
+  const int num_act_;
+  std::shared_ptr<geometry::Meshcat> meshcat_;
+};
 
 int main(int argc, char* argv[]) {
   if (argc < 4) {
@@ -69,6 +95,7 @@ int main(int argc, char* argv[]) {
       {"fer_joint4", 87},
       {"fer_joint5", 12},
       {"fer_joint6", 87},
+      {"fer_joint7", 12},
   };
   for (const auto& a : act) {
     const auto& joint =
@@ -86,6 +113,7 @@ int main(int argc, char* argv[]) {
       {"fer_joint4", 0.0},
       {"fer_joint5", 0.0},
       {"fer_joint6", 0.0},
+      {"fer_joint7", 0.0},
   };
   for (const auto& [name, d] : damp) {
     plant.GetMutableJointByName<multibody::RevoluteJoint>(name, robot)
@@ -99,7 +127,11 @@ int main(int argc, char* argv[]) {
   // -------------------------------------------------------------
   const int n = plant.num_positions(robot);
   VectorXd q_des(n), v_des(plant.num_velocities(robot));
-  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2;
+  if (n >= 7) {
+    q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, 0.0;
+  } else {
+    q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2;
+  }
   v_des.setZero();  // all velocities = 0
 
   // -------------------------------------------------------------
@@ -114,14 +146,23 @@ int main(int argc, char* argv[]) {
                 g_comp->get_input_port_estimated_state());
 
   // -------------------------------------------------------------
-  // 6) Feed gravity-comp torques straight into the plant
+  // Prepare Meshcat (visualization + controls) *before* wiring torque.
   // -------------------------------------------------------------
-  builder.Connect(g_comp->get_output_port(), plant.get_actuation_input_port());
+  auto meshcat = std::make_shared<geometry::Meshcat>();
+
+  // 6) Feed gravity-comp torques plus user torque into the plant
+  // -------------------------------------------------------------
+  const int num_act = plant.num_actuators(robot);
+  auto* tau7_src = builder.AddSystem<Joint7TorqueSource>(num_act, meshcat);
+  auto* adder = builder.AddSystem<systems::Adder<double>>(2, num_act);
+
+  builder.Connect(g_comp->get_output_port(), adder->get_input_port(0));
+  builder.Connect(tau7_src->get_output_port(), adder->get_input_port(1));
+  builder.Connect(adder->get_output_port(), plant.get_actuation_input_port());
 
   // -------------------------------------------------------------
   // 9) (Optional) Add Drake Visualizer & LogSinks
   // -------------------------------------------------------------
-  auto meshcat = std::make_shared<geometry::Meshcat>();
   visualization::AddDefaultVisualization(&builder, meshcat);
 
   // ------------------------------------------------------------------
@@ -163,7 +204,6 @@ int main(int argc, char* argv[]) {
       builder.AddSystem<systems::VectorLogSink<double>>(n_state);
   builder.Connect(plant.get_state_output_port(), logger->get_input_port());
 
-  const int num_act = plant.num_actuators(robot);
   auto* torque_logger =
       builder.AddSystem<systems::VectorLogSink<double>>(num_act);
   builder.Connect(g_comp->get_output_port(), torque_logger->get_input_port());

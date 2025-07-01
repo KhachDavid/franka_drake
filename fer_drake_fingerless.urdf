@@ -216,9 +216,13 @@
       <inertia ixx="0.00019541063" ixy="1.65231e-06" ixz="1.48826e-06" iyy="0.00019210361" iyz="-1.31132e-06" izz="0.00017936256"/>
     </inertial>
   </link>
-  <joint name="fer_joint7" type="fixed">
+  <joint name="fer_joint7" type="revolute">
     <origin rpy="1.570796326794897 0 0" xyz="0.088 0 0"/>
     <parent link="fer_link6"/>
     <child link="fer_link7"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="12.0" lower="-2.8973" upper="2.8973" velocity="2.61"/>
+    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973"/>
+    <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
   </joint>
 </robot>
