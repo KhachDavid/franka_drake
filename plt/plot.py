@@ -73,10 +73,11 @@ def parse_simulation_log(log_str):
             if i + j >= len(lines):
                 break  # Reached end of log unexpectedly
             tau_line = lines[i + j].strip()
-            m = re.search(float_re, tau_line)
+            # Extract the numeric torque value *after* the '=' sign, skipping the joint index number.
+            m = re.search(r"=\s*(" + float_re + ")", tau_line)
             if m:
                 try:
-                    joint_torques.append(float(m.group(0)))
+                    joint_torques.append(float(m.group(1)))
                     continue
                 except ValueError:
                     pass

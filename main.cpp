@@ -204,9 +204,11 @@ int main(int argc, char* argv[]) {
       builder.AddSystem<systems::VectorLogSink<double>>(n_state);
   builder.Connect(plant.get_state_output_port(), logger->get_input_port());
 
+  // Log the *actual* commanded torques that are sent to the plant, i.e.
+  // gravity-compensation plus any user-slider input.
   auto* torque_logger =
       builder.AddSystem<systems::VectorLogSink<double>>(num_act);
-  builder.Connect(g_comp->get_output_port(), torque_logger->get_input_port());
+  builder.Connect(adder->get_output_port(), torque_logger->get_input_port());
 
   // -------------------------------------------------------------
   // 10) Build the diagram + simulate
