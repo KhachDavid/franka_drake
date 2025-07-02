@@ -180,7 +180,7 @@ int main(int argc, char* argv[]) {
   visualization::AddDefaultVisualization(&builder, meshcat);
 
   // Make the slider appear in the Meshcat controls.
-  meshcat->AddSlider("tau7", -1.0, 1.0, 0.01, 0.0);
+  meshcat->AddSlider("tau7", -5.0, 5.0, 0.01, 0.0);
 
   // Define a small LeafSystem that reads the slider at every evaluation.
   class TorqueSliderSystem final : public systems::LeafSystem<double> {
