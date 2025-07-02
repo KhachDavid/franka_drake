@@ -1,5 +1,19 @@
 # Simulating Franka FER3 Control Box in Drake
 
+## Week of June 29
+
+Upon disabling mesh collisions we have gravity compensation working.
+
+Below is a graph of a torque slider being used in a discrete drake simulation
+
+![image](https://github.com/user-attachments/assets/f9684435-962d-46a0-9716-f4b1b6a1389d)
+
+The culprit was the mesh collisions
+
+![image](https://github.com/user-attachments/assets/2a603f3b-bc79-459f-b8d1-2d68127c468a)
+
+At some positions (for example $J_{7} = \pi/2$) joints 6 and 7 were in collision which created uncertainty to the dynamics solver in Drake. 
+
 ## Week of June 2
 
 Assumption: PID gains are zero, so all we are feeding into the Franka is gravity‐compensation torque. Any tiny numerical error makes the arm "wander" and there's no P or D torque to pull it back, and so we see that low‐frequency wobble.
