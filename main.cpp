@@ -19,44 +19,20 @@
 #include <drake/systems/primitives/adder.h>
 #include <drake/systems/primitives/constant_vector_source.h>
 #include <drake/systems/primitives/vector_log_sink.h>
-#include <drake/systems/framework/leaf_system.h>
 
 // Drake visualization
 #include <drake/visualization/visualization_config_functions.h>
-#include <drake/geometry/meshcat.h>
-#include <drake/geometry/rgba.h>
-#include <drake/geometry/shape_specification.h>
 
 // Eigen helpers
 #include <Eigen/Core>
 
+#include <drake/math/rigid_transform.h>
+
+#include <drake/geometry/meshcat.h>
+#include <memory>
+
 using namespace drake;
 using Eigen::VectorXd;
-
-// Leaf system that outputs a torque vector whose last entry is set by a Meshcat slider.
-class Joint7TorqueSource final : public systems::LeafSystem<double> {
- public:
-  Joint7TorqueSource(int num_act, std::shared_ptr<geometry::Meshcat> meshcat)
-      : num_act_(num_act), meshcat_(std::move(meshcat)) {
-    this->DeclareVectorOutputPort("tau7", num_act_,
-                                  &Joint7TorqueSource::CalcOutput);
-    if (num_act_ >= 7) {
-      meshcat_->AddSlider("tau7_cmd[Nm]", -1.0, 1.0, 0.01, 0.0);
-    }
-  }
-
- private:
-  void CalcOutput(const systems::Context<double>&,
-                  systems::BasicVector<double>* output) const {
-    Eigen::VectorXd tau = Eigen::VectorXd::Zero(num_act_);
-    if (num_act_ >= 7) {
-      tau(num_act_ - 1) = meshcat_->GetSliderValue("tau7_cmd[Nm]");
-    }
-    output->SetFromVector(tau);
-  }
-  const int num_act_;
-  std::shared_ptr<geometry::Meshcat> meshcat_;
-};
 
 int main(int argc, char* argv[]) {
   if (argc < 4) {
@@ -95,7 +71,7 @@ int main(int argc, char* argv[]) {
       {"fer_joint4", 87},
       {"fer_joint5", 12},
       {"fer_joint6", 87},
-      {"fer_joint7", 12},
+      {"fer_joint7", 87},
   };
   for (const auto& a : act) {
     const auto& joint =
@@ -104,20 +80,73 @@ int main(int argc, char* argv[]) {
   }
 
   // -------------------------------------------------------------
-  // 3) Set per-joint viscous damping to zero (pure gravity compensation)
+  // Add a tiny "triad" (RGB cylinders) to visualize every joint
+  // frame's local axes in Meshcat.  We have to register the
+  // geometries *before* MultibodyPlant::Finalize().
+  // -------------------------------------------------------------
+  const double axis_len = 0.15;   // [m]
+  const double axis_rad = 0.003;  // [m]
+
+  const geometry::Cylinder cyl_shape(axis_rad, axis_len);
+
+  // Local transforms that place the cylinder so its base sits at the
+  // frame origin and it extends +X / +Y / +Z respectively.
+  const math::RigidTransformd X_FGx(
+      math::RotationMatrixd::MakeYRotation(M_PI / 2),  // Z-axis → +X
+      Eigen::Vector3d(axis_len / 2, 0, 0));
+  const math::RigidTransformd X_FGy(
+      math::RotationMatrixd::MakeXRotation(-M_PI / 2), // Z-axis → +Y
+      Eigen::Vector3d(0, axis_len / 2, 0));
+  const math::RigidTransformd X_FGz(
+      math::RotationMatrixd(),               // already +Z
+      Eigen::Vector3d(0, 0, axis_len / 2));
+
+  const Eigen::Vector4d red(1, 0, 0, 0.9);
+  const Eigen::Vector4d grn(0, 1, 0, 0.9);
+  const Eigen::Vector4d blu(0, 0, 1, 0.9);
+
+  for (const auto& a : act) {
+    const auto& joint =
+        plant.GetJointByName<multibody::RevoluteJoint>(a.n, robot);
+
+    // We'll render the triad on the child body frame of this joint. It has
+    // the same pose as the joint's frame-on-child and therefore reflects the
+    // joint axis orientation in Meshcat.
+    const auto& body = joint.child_body();
+
+    plant.RegisterVisualGeometry(body, X_FGx, cyl_shape, a.n + ":x", red);
+    plant.RegisterVisualGeometry(body, X_FGy, cyl_shape, a.n + ":y", grn);
+    plant.RegisterVisualGeometry(body, X_FGz, cyl_shape, a.n + ":z", blu);
+  }
+
+  // -------------------------------------------------------------
+  // 3) Set per-joint viscous damping to a nonzero value
   // -------------------------------------------------------------
   const std::vector<std::pair<std::string,double>> damp = {
-      {"fer_joint1", 0.0},
-      {"fer_joint2", 0.0},
-      {"fer_joint3", 0.0},
-      {"fer_joint4", 0.0},
-      {"fer_joint5", 0.0},
-      {"fer_joint6", 0.0},
-      {"fer_joint7", 0.0},
+      {"fer_joint1", 22.0},
+      {"fer_joint2", 22.0},
+      {"fer_joint3", 22.0},
+      {"fer_joint4", 22.0},
+      {"fer_joint5", 11.0},
+      {"fer_joint6", 11.0},
+      {"fer_joint7", 11.0},
   };
   for (const auto& [name, d] : damp) {
     plant.GetMutableJointByName<multibody::RevoluteJoint>(name, robot)
          .set_default_damping(d);
+  }
+
+  // -------------------------------------------------------------
+  // Disable collisions by stripping proximity roles
+  // -------------------------------------------------------------
+  {
+    const geometry::SourceId sid = plant.get_source_id().value();
+    for (multibody::BodyIndex b(0); b < plant.num_bodies(); ++b) {
+      const auto& body = plant.get_body(b);
+      for (const geometry::GeometryId gid : plant.GetCollisionGeometriesForBody(body)) {
+        scene_graph.RemoveRole(sid, gid, geometry::Role::kProximity);
+      }
+    }
   }
 
   plant.Finalize();
@@ -127,11 +156,7 @@ int main(int argc, char* argv[]) {
   // -------------------------------------------------------------
   const int n = plant.num_positions(robot);
   VectorXd q_des(n), v_des(plant.num_velocities(robot));
-  if (n >= 7) {
-    q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, 0.0;
-  } else {
-    q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2;
-  }
+  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/2;
   v_des.setZero();  // all velocities = 0
 
   // -------------------------------------------------------------
@@ -146,76 +171,76 @@ int main(int argc, char* argv[]) {
                 g_comp->get_input_port_estimated_state());
 
   // -------------------------------------------------------------
-  // Prepare Meshcat (visualization + controls) *before* wiring torque.
+  // 6) Add a Meshcat slider for joint 7 torque and a helper system
+  //    that outputs an n×1 vector where only the last element is
+  //    the slider value.
   // -------------------------------------------------------------
+  // Capture the Meshcat instance that AddDefaultVisualization will create.
   auto meshcat = std::make_shared<geometry::Meshcat>();
+  visualization::AddDefaultVisualization(&builder, meshcat);
 
-  // 6) Feed gravity-comp torques plus user torque into the plant
+  // Make the slider appear in the Meshcat controls.
+  meshcat->AddSlider("tau7", -1.0, 1.0, 0.01, 0.0);
+
+  // Define a small LeafSystem that reads the slider at every evaluation.
+  class TorqueSliderSystem final : public systems::LeafSystem<double> {
+   public:
+     TorqueSliderSystem(int vector_size, int index,
+                        std::shared_ptr<geometry::Meshcat> meshcat)
+         : meshcat_(std::move(meshcat)),
+           n_(vector_size),
+           idx_(index) {
+       this->DeclareVectorOutputPort(
+           "tau_vec", systems::BasicVector<double>(n_),
+           &TorqueSliderSystem::DoCalcOutput);
+     }
+   private:
+     void DoCalcOutput(const systems::Context<double>&,
+                       systems::BasicVector<double>* out) const {
+       Eigen::VectorXd tau = Eigen::VectorXd::Zero(n_);
+       tau[idx_] = meshcat_->GetSliderValue("tau7");
+       out->SetFromVector(tau);
+     }
+     std::shared_ptr<geometry::Meshcat> meshcat_;
+     const int n_;
+     const int idx_;
+   };
+
+  // Instantiate the slider system (joint 7 corresponds to index 6).
+  auto* tau_slider =
+      builder.AddSystem<TorqueSliderSystem>(n, 6, meshcat);
+
   // -------------------------------------------------------------
-  const int num_act = plant.num_actuators(robot);
-  auto* tau7_src = builder.AddSystem<Joint7TorqueSource>(num_act, meshcat);
-  auto* adder = builder.AddSystem<systems::Adder<double>>(2, num_act);
+  // 7) Sum τ = τ_gc + τ_slider
+  // -------------------------------------------------------------
+  auto* adder = builder.AddSystem<systems::Adder<double>>(2, n);
 
   builder.Connect(g_comp->get_output_port(), adder->get_input_port(0));
-  builder.Connect(tau7_src->get_output_port(), adder->get_input_port(1));
+  builder.Connect(tau_slider->get_output_port(), adder->get_input_port(1));
+
+  // Feed the total torque to the plant.
   builder.Connect(adder->get_output_port(), plant.get_actuation_input_port());
 
   // -------------------------------------------------------------
-  // 9) (Optional) Add Drake Visualizer & LogSinks
+  // 8) (Optional) Add Drake Visualizer & LogSinks
   // -------------------------------------------------------------
-  visualization::AddDefaultVisualization(&builder, meshcat);
-
-  // ------------------------------------------------------------------
-  // Add RGB triads to visualize the axes of link6 and link7 frames.
-  // ------------------------------------------------------------------
-  const double axis_L = 0.08;  // length [m]
-  const double r_ax = 0.002;  // radius [m]
-
-  auto add_triad = [&](const multibody::Frame<double>& F,
-                       const std::string& path) {
-    using geometry::Cylinder;
-    using geometry::Rgba;
-    using math::RigidTransformd;
-    using Eigen::Vector3d;
-
-    // X-axis (red)
-    meshcat->SetObject(path + "/x", Cylinder(r_ax, axis_L), Rgba(1, 0, 0, 1));
-    meshcat->SetTransform(path + "/x",
-        RigidTransformd(Eigen::AngleAxisd(M_PI / 2, Vector3d::UnitY()),
-                        Vector3d(axis_L / 2, 0, 0)));
-
-    // Y-axis (green)
-    meshcat->SetObject(path + "/y", Cylinder(r_ax, axis_L), Rgba(0, 1, 0, 1));
-    meshcat->SetTransform(path + "/y",
-        RigidTransformd(Eigen::AngleAxisd(-M_PI / 2, Vector3d::UnitX()),
-                        Vector3d(0, axis_L / 2, 0)));
-
-    // Z-axis (blue)
-    meshcat->SetObject(path + "/z", Cylinder(r_ax, axis_L), Rgba(0, 0, 1, 1));
-    meshcat->SetTransform(path + "/z",
-        RigidTransformd(Eigen::Quaterniond::Identity(), Vector3d(0, 0, axis_L / 2)));
-  };
-
-  add_triad(plant.GetFrameByName("fer_link6", robot), "link6_triad");
-  add_triad(plant.GetFrameByName("fer_link7", robot), "link7_triad");
+  // visualization::AddDefaultVisualization(&builder);
 
   const int n_state = plant.num_positions() + plant.num_velocities();
   auto* logger =
       builder.AddSystem<systems::VectorLogSink<double>>(n_state);
   builder.Connect(plant.get_state_output_port(), logger->get_input_port());
 
-  // Log the *actual* commanded torques that are sent to the plant, i.e.
-  // gravity-compensation plus any user-slider input.
   auto* torque_logger =
-      builder.AddSystem<systems::VectorLogSink<double>>(num_act);
+      builder.AddSystem<systems::VectorLogSink<double>>(plant.num_actuators(robot));
   builder.Connect(adder->get_output_port(), torque_logger->get_input_port());
 
   // -------------------------------------------------------------
-  // 10) Build the diagram + simulate
+  // 9) Build the diagram + simulate
   // -------------------------------------------------------------
   auto diagram = builder.Build();
   systems::Simulator<double> sim(*diagram);
-  //sim.set_target_realtime_rate(1.0);
+  sim.set_target_realtime_rate(1.0);
 
   auto& rk = sim.reset_integrator<systems::RungeKutta5Integrator<double>>();
   rk.set_target_accuracy(1e-12);
@@ -224,28 +249,51 @@ int main(int argc, char* argv[]) {
   // Set the initial joint state to exactly (q_des, v_des)
   auto& root = sim.get_mutable_context();
   auto& plant_ctx = plant.GetMyMutableContextFromRoot(&root);
-
-  plant.SetPositions(&plant_ctx, robot, q_des);
-
   plant.SetPositions(&plant_ctx, robot, q_des);
   plant.SetVelocities(&plant_ctx, robot, v_des);
 
   sim.Initialize();
-  std::cout << "Running … press <Enter> to begin" << std::flush;
-  std::cin.get();
-  sim.AdvanceTo(30.0);
+  std::cout << "Running … press <Enter> to begin"; std::cin.get();
+  sim.AdvanceTo(20.0);
 
   // Dump a few logged samples
-  const auto& log = logger->GetLog(logger->GetMyContextFromRoot(sim.get_context()));
-  for (int i = 0; i < log.num_samples(); i += 200) {
-    std::cout << log.sample_times()[i] << "  "
-              << log.data().col(i).head(n).transpose() << "\n";
-    for (int j = 0; j < num_act; ++j) {
+  const auto& L = logger->GetLog(logger->GetMyContextFromRoot(sim.get_context()));
+  // Create a separate context for forward-kinematics queries (so we don't
+  // disturb the simulator's final context when we tweak the positions for
+  // every log sample).
+  std::unique_ptr<systems::Context<double>> kinematics_ctx =
+      plant.CreateDefaultContext();
+  for (int i = 0; i < L.num_samples(); i += 200) {
+    std::cout << L.sample_times()[i] << "  "
+              << L.data().col(i).head(n).transpose() << "\n";
+    for (int j = 0; j < 7; ++j) {
       std::cout << "  tau " << (j + 1) << " = "
                 << torque_logger->GetLog(
                        torque_logger->GetMyContextFromRoot(sim.get_context()))
                        .data()(j, i)
                 << "  [Nm]\n";
+    }
+
+    // -------------------------------------------------------------------
+    // Forward-kinematics: report the world-space xyz position of every
+    // joint frame.
+    // -------------------------------------------------------------------
+    // Set the joint configuration in our scratch context to match this log
+    // sample's positions.
+    const VectorXd q_sample = L.data().col(i).head(n);
+    plant.SetPositions(kinematics_ctx.get(), robot, q_sample);
+
+    for (const auto& a : act) {
+      const auto& joint_obj =
+          plant.GetJointByName<multibody::RevoluteJoint>(a.n, robot);
+
+      // World pose of the joint's parent frame (this corresponds to the
+      // joint origin as defined in the URDF).
+      const math::RigidTransformd X_WJ = plant.CalcRelativeTransform(
+          *kinematics_ctx, plant.world_frame(), joint_obj.frame_on_parent());
+
+      const auto& p_WJ = X_WJ.translation();
+      std::cout << "  xyz " << a.n << " = [" << p_WJ.transpose() << "]\n";
     }
   }
 
