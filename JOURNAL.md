@@ -2,6 +2,17 @@
 
 ## Week of June 29
 
+List of examples to support on the simulator:
+```
+cartersian_impedence_control - when pushing the robot the end effector tries to maintain the position
+
+communication_test - moves robot to home position, in the meantime it starts torque control and keeps track of the robot
+Small “sanity-check” program that tells you how well your PC can keep up the 1 kHz control‐loop that a Franka robot expects. It does not try to move the arm in any interesting way; instead it sends zero torques for ten seconds while measuring how many of its commands actually reach the robot and how many robot states it receives back. From these numbers it prints a “success rate” so you can decide whether your network card / real-time kernel / CPU are fast enough for serious torque-control applications (FCI).
+
+echo_robot_state - A minimal "hello world" to verify you can receive live robot data.
+
+generate_elbow_motion - 
+```
 Upon disabling mesh collisions we have gravity compensation working.
 
 Below is a graph of a torque slider being used in a discrete drake simulation
