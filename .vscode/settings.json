@@ -74,7 +74,8 @@
       "any": "cpp",
       "codecvt": "cpp",
       "unordered_set": "cpp",
-      "typeindex": "cpp"
+      "typeindex": "cpp",
+      "*.tcc": "cpp"
     }
   }
   

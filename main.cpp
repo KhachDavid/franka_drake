@@ -123,13 +123,13 @@ int main(int argc, char* argv[]) {
   // 3) Set per-joint viscous damping to a nonzero value
   // -------------------------------------------------------------
   const std::vector<std::pair<std::string,double>> damp = {
-      {"fer_joint1", 22.0},
-      {"fer_joint2", 22.0},
-      {"fer_joint3", 22.0},
-      {"fer_joint4", 22.0},
-      {"fer_joint5", 11.0},
-      {"fer_joint6", 11.0},
-      {"fer_joint7", 11.0},
+      {"fer_joint1", 1.0},
+      {"fer_joint2", 1.0},
+      {"fer_joint3", 1.0},
+      {"fer_joint4", 1.0},
+      {"fer_joint5", 1.0},
+      {"fer_joint6", 1.0},
+      {"fer_joint7", 1.0},
   };
   for (const auto& [name, d] : damp) {
     plant.GetMutableJointByName<multibody::RevoluteJoint>(name, robot)
