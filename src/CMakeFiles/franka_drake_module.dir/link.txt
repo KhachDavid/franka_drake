@@ -1,0 +1,2 @@
+/usr/bin/ar qc libfranka_drake_module.a CMakeFiles/franka_drake_module.dir/franka_drake_module.cpp.o CMakeFiles/franka_drake_module.dir/simulator_server.cpp.o CMakeFiles/franka_drake_module.dir/fci_sim_server.cpp.o
+/usr/bin/ranlib libfranka_drake_module.a
