@@ -1,5 +1,11 @@
 # Simulating Franka FER3 Control Box in Drake
 
+## Week of July 14
+
+
+https://github.com/user-attachments/assets/492791ec-3dd8-49f9-b5a0-b80df2419a94
+
+
 ## Week of July 7
 
 Unedited clip of one libfranka example, controlling joint 7 of robots in sim and real life
