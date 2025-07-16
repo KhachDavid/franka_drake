@@ -89,6 +89,15 @@ class FciPositionController final : public drake::systems::LeafSystem<double> {
        // PD control law: tau = Kp*(q_desired - q_current) - Kd*dq_current
        control_torques = kp.cwiseProduct(target_q - current_q) - kd.cwiseProduct(current_dq);
        
+       // Debug logging (every 1000 calls to avoid spam)
+       static int debug_count = 0;
+       if (++debug_count % 1000 == 0) {
+         std::cout << "[PD Controller] Target: [" << target_q.transpose() << "]" << std::endl;
+         std::cout << "[PD Controller] Current: [" << current_q.transpose() << "]" << std::endl;
+         std::cout << "[PD Controller] Error: [" << (target_q - current_q).transpose() << "]" << std::endl;
+         std::cout << "[PD Controller] Control torques: [" << control_torques.transpose() << "]" << std::endl;
+       }
+       
        // Add any direct torque commands from libfranka
        for (int i = 0; i < 7; ++i) {
          control_torques[i] += g_robot_state.tau_cmd[i];
@@ -222,10 +231,25 @@ void handle_robot_command(const franka_fci_sim::protocol::RobotCommand& cmd) {
   bool has_cartesian_cmd = false; 
   bool has_torque_cmd = false;
   
-  // Check joint position commands
+  // FIXED: Check joint position commands by comparing with current position
+  // A position command is valid if it's significantly different from current position
   for (int i = 0; i < 7; ++i) {
-    if (std::abs(cmd.motion.q_c[i]) > 1e-6) {
+    double current_pos = g_robot_state.q[i];
+    double commanded_pos = cmd.motion.q_c[i];
+    if (std::abs(commanded_pos - current_pos) > 0.01) {  // 0.01 radians = ~0.57 degrees threshold
       has_position_cmd = true;
+      break;
+    }
+  }
+  
+  // If no significant difference detected, but we have any non-zero commanded positions, still treat as position command
+  // This handles initial commands or cases where current position isn't properly initialized
+  if (!has_position_cmd) {
+    for (int i = 0; i < 7; ++i) {
+      if (std::abs(cmd.motion.q_c[i]) > 1e-6) {
+        has_position_cmd = true;
+        break;
+      }
     }
   }
   
@@ -559,13 +583,33 @@ int main(int argc, char** argv) {
           prev_q[i] = g_robot_state.q[i];
         }
       } else {
-        // Normal mode: Log summary every 2 seconds
-        std::cout << "[Drake] Sim time: " << simulator.get_context().get_time() << "s, ";
-        std::cout << "q1=" << g_robot_state.q[0] << ", q2=" << g_robot_state.q[1] << ", ";
-        std::cout << "EE_z=" << g_robot_state.O_T_EE[14] << ", ";
-        std::cout << "has_cmds: pos=" << g_robot_state.has_position_command 
+        // Normal mode: Log summary every 2 seconds with ALL joint positions
+        std::cout << "[Drake] Sim time: " << std::fixed << std::setprecision(3) << simulator.get_context().get_time() << "s" << std::endl;
+        std::cout << "  Current q: [";
+        for (int i = 0; i < 7; ++i) {
+          std::cout << std::fixed << std::setprecision(4) << g_robot_state.q[i] << (i < 6 ? ", " : "");
+        }
+        std::cout << "]" << std::endl;
+        
+        if (g_robot_state.has_position_command) {
+          std::cout << "  Target  q: [";
+          for (int i = 0; i < 7; ++i) {
+            std::cout << std::fixed << std::setprecision(4) << g_robot_state.q_cmd[i] << (i < 6 ? ", " : "");
+          }
+          std::cout << "]" << std::endl;
+          
+          std::cout << "  Error   q: [";
+          for (int i = 0; i < 7; ++i) {
+            double error = g_robot_state.q_cmd[i] - g_robot_state.q[i];
+            std::cout << std::fixed << std::setprecision(4) << error << (i < 6 ? ", " : "");
+          }
+          std::cout << "]" << std::endl;
+        }
+        
+        std::cout << "  Commands: pos=" << g_robot_state.has_position_command 
                   << " cart=" << g_robot_state.has_cartesian_command 
-                  << " tau=" << g_robot_state.has_torque_command << std::endl;
+                  << " tau=" << g_robot_state.has_torque_command 
+                  << ", EE_z=" << std::fixed << std::setprecision(4) << g_robot_state.O_T_EE[14] << std::endl;
       }
       last_log_time = now;
     }
