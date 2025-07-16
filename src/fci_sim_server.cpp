@@ -282,7 +282,6 @@ void FrankaFciSimServer::handle_connect_command(const protocol::CommandHeader& h
                 break;
             }
             
-            // FIXED: Always respect the requested motion generator mode from libfranka
             // The controller mode handles torque vs impedance, motion generator mode is separate
             switch (requested_motion_generator_mode_) {
               case protocol::Move::MotionGeneratorMode::kJointPosition:
@@ -359,7 +358,6 @@ void FrankaFciSimServer::handle_connect_command(const protocol::CommandHeader& h
             response_state.message_id = command.message_id + 1;
             response_state.robot_mode = protocol::RobotMode::kMove;
             
-            // FIXED: For torque control (ExternalController), motion generator should be Idle
             response_state.controller_mode = protocol::ControllerMode::kExternalController;
             
             // Convert from Move::MotionGeneratorMode to MotionGeneratorMode
