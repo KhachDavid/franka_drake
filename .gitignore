@@ -26,6 +26,7 @@ test_robot_movement
 *.swo
 *~
 README.pdf
+plt/
 
 # OS files
 .DS_Store
