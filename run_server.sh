@@ -14,4 +14,4 @@ echo "Starting Franka FCI Simulation Server..."
 echo "Press Ctrl+C to stop"
 
 # Run the server
-./build/bin/franka-fci-sim-server 
+./build/bin/franka-fci-sim-server ~/ws/franka/src/franka_description/package.xml models/urdf/fer_drake_fingerless.urdf 0.001 false
