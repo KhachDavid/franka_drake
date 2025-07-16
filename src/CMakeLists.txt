@@ -1,3 +1,36 @@
-add_library(franka_drake_module STATIC franka_drake_module.cpp simulator_server.cpp fci_sim_server.cpp)
-target_link_libraries(franka_drake_module drake::drake Poco::Foundation Poco::Net)
-target_include_directories(franka_drake_module PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+# Create the main library
+add_library(franka_drake_core STATIC 
+    franka_drake_module.cpp 
+    simulator_server.cpp 
+    fci_sim_server.cpp
+)
+
+# Set library properties
+set_target_properties(franka_drake_core PROPERTIES
+    VERSION ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+    PUBLIC_HEADER ""
+)
+
+# Link libraries
+target_link_libraries(franka_drake_core 
+    drake::drake 
+    Poco::Foundation 
+    Poco::Net
+)
+
+# Include directories
+target_include_directories(franka_drake_core 
+    PUBLIC 
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../include>
+        $<INSTALL_INTERFACE:include/franka_drake>
+)
+
+# Install rules
+install(TARGETS franka_drake_core
+    EXPORT franka_drake_coreTargets
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
+)

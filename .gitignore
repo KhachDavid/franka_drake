@@ -1,5 +1,37 @@
+# Build directories
 build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+
+# Compiled binaries
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+debug_server
+franka_fci_sim_server_main
+sim_sandbox
+run_simulator_server
+drake_simple_example
+test_robot_movement
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
 README.pdf
-log_*
-*.png
-__pycache__/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
