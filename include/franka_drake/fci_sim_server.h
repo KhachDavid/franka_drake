@@ -32,6 +32,10 @@ class FrankaFciSimServer {
   using CommandHandler = std::function<void(const protocol::RobotCommand&)>;
   void set_command_handler(CommandHandler handler);
 
+  // Set the callback to handle controller mode changes
+  using ModeChangeHandler = std::function<void(protocol::Move::ControllerMode, protocol::Move::MotionGeneratorMode)>;
+  void set_mode_change_handler(ModeChangeHandler handler);
+
  private:
   void server_thread();
   void handle_client_connection();
@@ -51,6 +55,7 @@ class FrankaFciSimServer {
 
   StateProvider state_provider_;
   CommandHandler command_handler_;
+  ModeChangeHandler mode_change_handler_;
 
   // POSIX socket members
   int tcp_server_fd_ = -1;

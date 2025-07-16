@@ -282,6 +282,8 @@ void FrankaFciSimServer::handle_connect_command(const protocol::CommandHeader& h
                 break;
             }
             
+            // FIXED: Always respect the requested motion generator mode from libfranka
+            // The controller mode handles torque vs impedance, motion generator mode is separate
             switch (requested_motion_generator_mode_) {
               case protocol::Move::MotionGeneratorMode::kJointPosition:
                 state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
@@ -356,8 +358,29 @@ void FrankaFciSimServer::handle_connect_command(const protocol::CommandHeader& h
             protocol::RobotState response_state = state_provider_();
             response_state.message_id = command.message_id + 1;
             response_state.robot_mode = protocol::RobotMode::kMove;
+            
+            // FIXED: For torque control (ExternalController), motion generator should be Idle
             response_state.controller_mode = protocol::ControllerMode::kExternalController;
-            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
+            
+            // Convert from Move::MotionGeneratorMode to MotionGeneratorMode
+            switch (requested_motion_generator_mode_) {
+              case protocol::Move::MotionGeneratorMode::kJointPosition:
+                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
+                break;
+              case protocol::Move::MotionGeneratorMode::kJointVelocity:
+                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointVelocity;
+                break;
+              case protocol::Move::MotionGeneratorMode::kCartesianPosition:
+                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianPosition;
+                break;
+              case protocol::Move::MotionGeneratorMode::kCartesianVelocity:
+                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianVelocity;
+                break;
+              default:
+                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
+                break;
+            }
+            
             response_state.control_command_success_rate = 1.0;
             response_state.errors.fill(false);
             response_state.reflex_reason.fill(false);
@@ -498,6 +521,11 @@ void FrankaFciSimServer::handle_move_command(const protocol::CommandHeader& head
         sprintf(mode_msg, "[FCI Sim Server] Move request: controller_mode=%d, motion_mode=%d", 
                 (int)requested_controller_mode_, (int)requested_motion_generator_mode_);
         log_message(mode_msg);
+        
+        // Notify main process about mode change
+        if (mode_change_handler_) {
+          mode_change_handler_(requested_controller_mode_, requested_motion_generator_mode_);
+        }
         
         // Read any remaining payload
         if (payload_size > sizeof(protocol::Move::Request)) {
@@ -748,6 +776,10 @@ void FrankaFciSimServer::set_state_provider(StateProvider provider) {
 
 void FrankaFciSimServer::set_command_handler(CommandHandler handler) {
   command_handler_ = std::move(handler);
+}
+
+void FrankaFciSimServer::set_mode_change_handler(ModeChangeHandler handler) {
+  mode_change_handler_ = std::move(handler);
 }
 
 void FrankaFciSimServer::close_sockets() {

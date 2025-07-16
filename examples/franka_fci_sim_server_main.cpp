@@ -38,6 +38,8 @@ struct SharedRobotState {
   bool has_position_command = false;
   bool has_torque_command = false;
   bool has_cartesian_command = false;
+  // Track current controller mode for proper torque detection
+  franka_fci_sim::protocol::Move::ControllerMode current_controller_mode = franka_fci_sim::protocol::Move::ControllerMode::kExternalController;
 };
 
 // Global shared state
@@ -225,15 +227,24 @@ void handle_robot_command(const franka_fci_sim::protocol::RobotCommand& cmd) {
     if (std::abs(cmd.motion.q_c[i]) > 1e-6) {
       has_position_cmd = true;
     }
-    if (std::abs(cmd.control.tau_J_d[i]) > 1e-6) {
-      has_torque_cmd = true;
-    }
   }
   
   // Check cartesian commands
   for (int i = 0; i < 16; ++i) {
     if (std::abs(cmd.motion.O_T_EE_c[i]) > 1e-6) {
       has_cartesian_cmd = true;
+      break;
+    }
+  }
+  
+  // FIXED: Determine torque command based on controller mode from Move request
+  // This handles cases where torques start at zero and ramp up (like move_joint7_torque)
+  has_torque_cmd = (g_robot_state.current_controller_mode == franka_fci_sim::protocol::Move::ControllerMode::kExternalController);
+  
+  // Also check if any torques are explicitly non-zero (for immediate torque commands)
+  for (int i = 0; i < 7; ++i) {
+    if (std::abs(cmd.control.tau_J_d[i]) > 1e-6) {
+      has_torque_cmd = true;
       break;
     }
   }
@@ -257,7 +268,9 @@ void handle_robot_command(const franka_fci_sim::protocol::RobotCommand& cmd) {
     }
     if (has_torque_cmd) {
       std::cout << "TORQUE tau=[" << std::fixed << std::setprecision(3)
-                << cmd.control.tau_J_d[0] << "," << cmd.control.tau_J_d[1] << "," << cmd.control.tau_J_d[2] << "]";
+                << cmd.control.tau_J_d[0] << "," << cmd.control.tau_J_d[1] << "," << cmd.control.tau_J_d[2] << "," 
+                << cmd.control.tau_J_d[3] << "," << cmd.control.tau_J_d[4] << "," << cmd.control.tau_J_d[5] << "," 
+                << cmd.control.tau_J_d[6] << "]";
     }
     if (!has_position_cmd && !has_cartesian_cmd && !has_torque_cmd) {
       std::cout << "NO_COMMANDS (all zeros)";
@@ -266,7 +279,7 @@ void handle_robot_command(const franka_fci_sim::protocol::RobotCommand& cmd) {
   }
   
   // Log first few commands in detail
-  if (cmd_count <= 5) {
+  if (cmd_count <= 50) {  // Increased from 10 to 50 to catch torque ramp-up
     std::cout << "[FCI] *** DETAILED COMMAND #" << cmd_count << " ***" << std::endl;
     std::cout << "  Joint positions: [" << std::fixed << std::setprecision(4);
     for (int i = 0; i < 7; ++i) {
@@ -275,10 +288,30 @@ void handle_robot_command(const franka_fci_sim::protocol::RobotCommand& cmd) {
     std::cout << "]" << std::endl;
     std::cout << "  Torques: [";
     for (int i = 0; i < 7; ++i) {
-      std::cout << cmd.control.tau_J_d[i] << (i < 6 ? ", " : "");
+      std::cout << std::fixed << std::setprecision(4) << cmd.control.tau_J_d[i] << (i < 6 ? ", " : "");
     }
     std::cout << "]" << std::endl;
+    std::cout << "  Controller Mode: " << static_cast<int>(g_robot_state.current_controller_mode) << std::endl;
     std::cout << "  Flags: pos=" << has_position_cmd << " cart=" << has_cartesian_cmd << " tau=" << has_torque_cmd << std::endl;
+    
+    // SPECIAL ALERT: Check for non-zero torques
+    bool has_nonzero_torque = false;
+    double max_torque = 0.0;
+    int max_torque_joint = -1;
+    for (int i = 0; i < 7; ++i) {
+      if (std::abs(cmd.control.tau_J_d[i]) > 1e-6) {
+        has_nonzero_torque = true;
+        if (std::abs(cmd.control.tau_J_d[i]) > std::abs(max_torque)) {
+          max_torque = cmd.control.tau_J_d[i];
+          max_torque_joint = i;
+        }
+      }
+    }
+    
+    if (has_nonzero_torque) {
+      std::cout << "  🔥 NON-ZERO TORQUE DETECTED! Max: " << std::fixed << std::setprecision(6) 
+                << max_torque << " Nm on joint " << (max_torque_joint + 1) << " 🔥" << std::endl;
+    }
   }
 }
 
@@ -412,6 +445,15 @@ int main(int argc, char** argv) {
   server.set_state_provider(get_robot_state);
   server.set_command_handler(handle_robot_command);
   
+  // Set up mode change handler to update shared state
+  server.set_mode_change_handler([](franka_fci_sim::protocol::Move::ControllerMode controller_mode, 
+                                    franka_fci_sim::protocol::Move::MotionGeneratorMode motion_mode) {
+    std::lock_guard<std::mutex> lock(g_robot_state.mutex);
+    g_robot_state.current_controller_mode = controller_mode;
+    std::cout << "[FCI] Controller mode changed to: " << static_cast<int>(controller_mode) 
+              << " (0=JointImpedance, 1=CartesianImpedance, 2=ExternalController)" << std::endl;
+  });
+  
   std::thread fci_thread([&server]() {
     server.run();
   });
@@ -433,14 +475,23 @@ int main(int argc, char** argv) {
   
   int sim_loop_count = 0;
   auto last_log_time = std::chrono::steady_clock::now();
+  auto sim_start_time = std::chrono::steady_clock::now();
   std::array<double, 7> prev_q = {0, 0, 0, 0, 0, 0, 0};  // Previous joint positions for movement detection
   
   while (g_sim_running.load()) {
-    const double target_time = simulator.get_context().get_time() + sim_step;
-    simulator.AdvanceTo(target_time);
+    // REAL-TIME SYNCHRONIZATION: Calculate target time based on wall-clock time
+    auto current_wall_time = std::chrono::steady_clock::now();
+    double elapsed_wall_time = std::chrono::duration<double>(current_wall_time - sim_start_time).count();
+    double target_sim_time = elapsed_wall_time; // 1:1 real-time ratio
     
-    // Update shared state with current Drake state
-    {
+    // Only advance simulation if we're behind target time
+    if (simulator.get_context().get_time() < target_sim_time) {
+      const double advance_to = simulator.get_context().get_time() + sim_step;
+      simulator.AdvanceTo(std::min(advance_to, target_sim_time));
+    }
+    
+    // Update shared state with current Drake state (do this less frequently)
+    if (sim_loop_count % 10 == 0) {  // Update every 10ms instead of every 1ms
       std::lock_guard<std::mutex> lock(g_robot_state.mutex);
       auto& context = simulator.get_context();
       auto& plant_context = plant.GetMyContextFromRoot(context);
@@ -474,7 +525,7 @@ int main(int argc, char** argv) {
     // Logging logic - different frequencies for headless vs normal mode
     sim_loop_count++;
     auto now = std::chrono::steady_clock::now();
-    double log_interval = headless ? 0.1 : 2.0;  // 100ms for headless, 2s for normal
+    double log_interval = headless ? 0.5 : 2.0;  // 500ms for headless (slower), 2s for normal
     
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_log_time).count() >= log_interval * 1000) {
       std::lock_guard<std::mutex> lock(g_robot_state.mutex);
@@ -500,6 +551,7 @@ int main(int argc, char** argv) {
         if (movement_detected) {
           std::cout << " *** MOVEMENT DETECTED! ***";
         }
+        std::cout << " (wall_time_ratio=" << std::fixed << std::setprecision(2) << simulator.get_context().get_time() / elapsed_wall_time << ")";
         std::cout << std::endl;
         
         // Update previous positions
@@ -518,6 +570,7 @@ int main(int argc, char** argv) {
       last_log_time = now;
     }
     
+    // CRITICAL: Sleep for exactly 1ms to maintain 1kHz loop rate
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 
