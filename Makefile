@@ -130,6 +130,32 @@ franka_drake_module/fast:
 .PHONY : franka_drake_module/fast
 
 #=============================================================================
+# Target rules for targets named franka_fci_sim_server_main
+
+# Build rule for target.
+franka_fci_sim_server_main: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 franka_fci_sim_server_main
+.PHONY : franka_fci_sim_server_main
+
+# fast build rule for target.
+franka_fci_sim_server_main/fast:
+	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/build
+.PHONY : franka_fci_sim_server_main/fast
+
+#=============================================================================
+# Target rules for targets named test_robot_movement
+
+# Build rule for target.
+test_robot_movement: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_robot_movement
+.PHONY : test_robot_movement
+
+# fast build rule for target.
+test_robot_movement/fast:
+	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/test_robot_movement.dir/build.make examples/CMakeFiles/test_robot_movement.dir/build
+.PHONY : test_robot_movement/fast
+
+#=============================================================================
 # Target rules for targets named drake_simple_example
 
 # Build rule for target.
@@ -168,19 +194,6 @@ sim_sandbox/fast:
 	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/sim_sandbox.dir/build.make examples/CMakeFiles/sim_sandbox.dir/build
 .PHONY : sim_sandbox/fast
 
-#=============================================================================
-# Target rules for targets named franka_fci_sim_server_main
-
-# Build rule for target.
-franka_fci_sim_server_main: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 franka_fci_sim_server_main
-.PHONY : franka_fci_sim_server_main
-
-# fast build rule for target.
-franka_fci_sim_server_main/fast:
-	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/build
-.PHONY : franka_fci_sim_server_main/fast
-
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -194,6 +207,7 @@ help:
 	@echo "... franka_fci_sim_server_main"
 	@echo "... run_simulator_server"
 	@echo "... sim_sandbox"
+	@echo "... test_robot_movement"
 .PHONY : help
 
 

@@ -117,6 +117,34 @@ depend:
 .PHONY : depend
 
 # Convenience name for target.
+examples/CMakeFiles/franka_fci_sim_server_main.dir/rule:
+	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
+.PHONY : examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
+
+# Convenience name for target.
+franka_fci_sim_server_main: examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
+.PHONY : franka_fci_sim_server_main
+
+# fast build rule for target.
+franka_fci_sim_server_main/fast:
+	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/build
+.PHONY : franka_fci_sim_server_main/fast
+
+# Convenience name for target.
+examples/CMakeFiles/test_robot_movement.dir/rule:
+	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 examples/CMakeFiles/test_robot_movement.dir/rule
+.PHONY : examples/CMakeFiles/test_robot_movement.dir/rule
+
+# Convenience name for target.
+test_robot_movement: examples/CMakeFiles/test_robot_movement.dir/rule
+.PHONY : test_robot_movement
+
+# fast build rule for target.
+test_robot_movement/fast:
+	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f examples/CMakeFiles/test_robot_movement.dir/build.make examples/CMakeFiles/test_robot_movement.dir/build
+.PHONY : test_robot_movement/fast
+
+# Convenience name for target.
 examples/CMakeFiles/drake_simple_example.dir/rule:
 	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 examples/CMakeFiles/drake_simple_example.dir/rule
 .PHONY : examples/CMakeFiles/drake_simple_example.dir/rule
@@ -157,20 +185,6 @@ sim_sandbox: examples/CMakeFiles/sim_sandbox.dir/rule
 sim_sandbox/fast:
 	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f examples/CMakeFiles/sim_sandbox.dir/build.make examples/CMakeFiles/sim_sandbox.dir/build
 .PHONY : sim_sandbox/fast
-
-# Convenience name for target.
-examples/CMakeFiles/franka_fci_sim_server_main.dir/rule:
-	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
-.PHONY : examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
-
-# Convenience name for target.
-franka_fci_sim_server_main: examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
-.PHONY : franka_fci_sim_server_main
-
-# fast build rule for target.
-franka_fci_sim_server_main/fast:
-	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/build
-.PHONY : franka_fci_sim_server_main/fast
 
 drake_simple_example.o: drake_simple_example.cpp.o
 .PHONY : drake_simple_example.o
@@ -268,6 +282,30 @@ sim_sandbox.cpp.s:
 	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f examples/CMakeFiles/sim_sandbox.dir/build.make examples/CMakeFiles/sim_sandbox.dir/sim_sandbox.cpp.s
 .PHONY : sim_sandbox.cpp.s
 
+test_robot_movement.o: test_robot_movement.cpp.o
+.PHONY : test_robot_movement.o
+
+# target to build an object file
+test_robot_movement.cpp.o:
+	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f examples/CMakeFiles/test_robot_movement.dir/build.make examples/CMakeFiles/test_robot_movement.dir/test_robot_movement.cpp.o
+.PHONY : test_robot_movement.cpp.o
+
+test_robot_movement.i: test_robot_movement.cpp.i
+.PHONY : test_robot_movement.i
+
+# target to preprocess a source file
+test_robot_movement.cpp.i:
+	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f examples/CMakeFiles/test_robot_movement.dir/build.make examples/CMakeFiles/test_robot_movement.dir/test_robot_movement.cpp.i
+.PHONY : test_robot_movement.cpp.i
+
+test_robot_movement.s: test_robot_movement.cpp.s
+.PHONY : test_robot_movement.s
+
+# target to generate assembly for a file
+test_robot_movement.cpp.s:
+	cd /home/david/final_project/franka_drake && $(MAKE) $(MAKESILENT) -f examples/CMakeFiles/test_robot_movement.dir/build.make examples/CMakeFiles/test_robot_movement.dir/test_robot_movement.cpp.s
+.PHONY : test_robot_movement.cpp.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -280,6 +318,7 @@ help:
 	@echo "... franka_fci_sim_server_main"
 	@echo "... run_simulator_server"
 	@echo "... sim_sandbox"
+	@echo "... test_robot_movement"
 	@echo "... drake_simple_example.o"
 	@echo "... drake_simple_example.i"
 	@echo "... drake_simple_example.s"
@@ -292,6 +331,9 @@ help:
 	@echo "... sim_sandbox.o"
 	@echo "... sim_sandbox.i"
 	@echo "... sim_sandbox.s"
+	@echo "... test_robot_movement.o"
+	@echo "... test_robot_movement.i"
+	@echo "... test_robot_movement.s"
 .PHONY : help
 
 

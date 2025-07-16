@@ -23,6 +23,7 @@
 #include <string>
 #include <mutex>
 #include <iomanip> // Required for std::fixed and std::setprecision
+#include <cmath>   // For sin function in gravity torque calculation
 
 // Shared state between Drake simulation and FCI server
 struct SharedRobotState {
@@ -43,23 +44,74 @@ struct SharedRobotState {
 SharedRobotState g_robot_state;
 std::atomic<bool> g_sim_running{true};
 
-// Drake system to provide FCI torque commands as input
-class FciTorqueSystem final : public drake::systems::LeafSystem<double> {
+// Drake system to provide FCI commands as input - PROPER POSITION CONTROL
+class FciPositionController final : public drake::systems::LeafSystem<double> {
  public:
-   FciTorqueSystem() {
-     this->DeclareVectorOutputPort("tau_fci", drake::systems::BasicVector<double>(7),
-                                  &FciTorqueSystem::CalcOutput);
+   FciPositionController() {
+     // Declare input ports for current robot state
+     state_input_port_ = this->DeclareVectorInputPort("robot_state", drake::systems::BasicVector<double>(14)).get_index();
+     
+     // Declare output port for computed control torques
+     this->DeclareVectorOutputPort("control_torques", drake::systems::BasicVector<double>(7),
+                                  &FciPositionController::CalcControlTorques);
    }
+
+   // Public accessor for state input port
+   int get_state_input_port() const { return state_input_port_; }
+
  private:
-   void CalcOutput(const drake::systems::Context<double>&,
-                   drake::systems::BasicVector<double>* out) const {
+   void CalcControlTorques(const drake::systems::Context<double>& context,
+                          drake::systems::BasicVector<double>* output) const {
      std::lock_guard<std::mutex> lock(g_robot_state.mutex);
-     Eigen::VectorXd v(7);
-     for (int i = 0; i < 7; ++i) {
-       v[i] = g_robot_state.tau_cmd[i];
+     
+     // Get current robot state from input
+     const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
+     
+     // Extract current positions and velocities
+     Eigen::VectorXd current_q = state_input.head(7);   // positions
+     Eigen::VectorXd current_dq = state_input.tail(7);  // velocities
+     
+     Eigen::VectorXd control_torques(7);
+     
+     if (g_robot_state.has_position_command) {
+       // POSITION CONTROL: Use PD controller to track commanded positions
+       Eigen::VectorXd target_q(7);
+       for (int i = 0; i < 7; ++i) {
+         target_q[i] = g_robot_state.q_cmd[i];
+       }
+       
+       // PD gains (tuned for smooth motion)
+       Eigen::VectorXd kp(7);  kp << 200, 200, 200, 200, 100, 100, 50;  // Position gains
+       Eigen::VectorXd kd(7);  kd << 20, 20, 20, 20, 10, 10, 5;         // Velocity gains
+       
+       // PD control law: tau = Kp*(q_desired - q_current) - Kd*dq_current
+       control_torques = kp.cwiseProduct(target_q - current_q) - kd.cwiseProduct(current_dq);
+       
+       // Add any direct torque commands from libfranka
+       for (int i = 0; i < 7; ++i) {
+         control_torques[i] += g_robot_state.tau_cmd[i];
+       }
+       
+     } else if (g_robot_state.has_torque_command) {
+       // TORQUE CONTROL: Direct torque application
+       for (int i = 0; i < 7; ++i) {
+         control_torques[i] = g_robot_state.tau_cmd[i];
+       }
+     } else {
+       // NO COMMANDS: Zero torques (gravity compensation will handle this)
+       control_torques.setZero();
      }
-     out->SetFromVector(v);
+     
+     // Apply torque limits for safety
+     const double max_torque = 50.0;  // Conservative limit
+     for (int i = 0; i < 7; ++i) {
+       control_torques[i] = std::max(-max_torque, std::min(max_torque, control_torques[i]));
+     }
+     
+     output->SetFromVector(control_torques);
    }
+   
+   int state_input_port_;
 };
 
 // Convert shared state to protocol RobotState
@@ -96,12 +148,31 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   state.NE_T_EE.fill(0.0);
   state.NE_T_EE[0] = state.NE_T_EE[5] = state.NE_T_EE[10] = state.NE_T_EE[15] = 1.0; // Identity
   
-  state.m_ee = 0.73;  // Approximate end-effector mass
-  state.m_load = 0.0;
-  state.I_ee.fill(0.0);
+  // Realistic end-effector parameters (CRITICAL for libfranka!)
+  state.m_ee = 0.73;  // Franka gripper mass in kg
+  state.m_load = 0.0; // No additional load
+  
+  // Realistic end-effector inertia tensor (6 values: Ixx, Iyy, Izz, Ixy, Ixz, Iyz)
+  // Based on Franka gripper specifications 
+  state.I_ee[0] = 0.001;  // Ixx
+  state.I_ee[1] = 0.0025; // Iyy  
+  state.I_ee[2] = 0.0017; // Izz
+  state.I_ee[3] = 0.0;    // Ixy
+  state.I_ee[4] = 0.0;    // Ixz
+  state.I_ee[5] = 0.0;    // Iyz
+  state.I_ee[6] = 0.0;    // (padding)
+  state.I_ee[7] = 0.0;    // (padding)
+  state.I_ee[8] = 0.0;    // (padding)
+  
+  // No load inertia
   state.I_load.fill(0.0);
-  state.F_x_Cee.fill(0.0);
-  state.F_x_Cload.fill(0.0);
+  
+  // Center of mass position for end-effector (relative to flange)
+  state.F_x_Cee[0] = 0.0;   // x
+  state.F_x_Cee[1] = 0.0;   // y  
+  state.F_x_Cee[2] = 0.058; // z (gripper center of mass ~58mm from flange)
+  
+  state.F_x_Cload.fill(0.0); // No load
   
   state.elbow.fill(0.0);
   state.elbow_d.fill(0.0);
@@ -128,6 +199,10 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   state.errors.fill(false);
   state.reflex_reason.fill(false);
   
+  // CRITICAL: This field determines if libfranka will send commands!
+  // Must be > 0.9 for libfranka to consider the robot ready
+  state.control_command_success_rate = 1.0;
+  
   return state;
 }
 
@@ -135,23 +210,27 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
 void handle_robot_command(const franka_fci_sim::protocol::RobotCommand& cmd) {
   std::lock_guard<std::mutex> lock(g_robot_state.mutex);
   
-  // Store torque commands
+  // Store all commands
   g_robot_state.tau_cmd = cmd.control.tau_J_d;
+  g_robot_state.q_cmd = cmd.motion.q_c;
+  g_robot_state.O_T_EE_cmd = cmd.motion.O_T_EE_c;
   
-  // Check for non-zero motion commands
-  bool has_q_cmd = false;
-  bool has_cartesian_cmd = false;
+  // Check for meaningful commands (not just zero/default values)
+  bool has_position_cmd = false;
+  bool has_cartesian_cmd = false; 
   bool has_torque_cmd = false;
   
+  // Check joint position commands
   for (int i = 0; i < 7; ++i) {
     if (std::abs(cmd.motion.q_c[i]) > 1e-6) {
-      has_q_cmd = true;
+      has_position_cmd = true;
     }
     if (std::abs(cmd.control.tau_J_d[i]) > 1e-6) {
       has_torque_cmd = true;
     }
   }
   
+  // Check cartesian commands
   for (int i = 0; i < 16; ++i) {
     if (std::abs(cmd.motion.O_T_EE_c[i]) > 1e-6) {
       has_cartesian_cmd = true;
@@ -159,47 +238,47 @@ void handle_robot_command(const franka_fci_sim::protocol::RobotCommand& cmd) {
     }
   }
   
-  if (has_q_cmd) {
-    g_robot_state.q_cmd = cmd.motion.q_c;
-    g_robot_state.has_position_command = true;
-  }
+  // Update command flags for controller
+  g_robot_state.has_position_command = has_position_cmd;
+  g_robot_state.has_cartesian_command = has_cartesian_cmd;
+  g_robot_state.has_torque_command = has_torque_cmd;
   
-  if (has_cartesian_cmd) {
-    g_robot_state.O_T_EE_cmd = cmd.motion.O_T_EE_c;
-    g_robot_state.has_cartesian_command = true;
-  }
-  
-  if (has_torque_cmd) {
-    g_robot_state.has_torque_command = true;
-  }
-  
-  // Log every 100 commands for debugging
+  // Enhanced logging every 100 commands
   static int cmd_count = 0;
   if (++cmd_count % 100 == 0) {
     std::cout << "[FCI] Command #" << cmd_count << " - ";
-    if (has_q_cmd) {
-      std::cout << "q_c=[" << cmd.motion.q_c[0] << ", " << cmd.motion.q_c[1] << ", ...] ";
+    if (has_position_cmd) {
+      std::cout << "JOINT_POS q_c=[" << std::fixed << std::setprecision(3) 
+                << cmd.motion.q_c[0] << "," << cmd.motion.q_c[1] << "," << cmd.motion.q_c[2] << ",...] ";
     }
     if (has_cartesian_cmd) {
-      std::cout << "O_T_EE_c[12-14]=[" << cmd.motion.O_T_EE_c[12] << ", " 
-                << cmd.motion.O_T_EE_c[13] << ", " << cmd.motion.O_T_EE_c[14] << "] ";
+      std::cout << "CARTESIAN pos=[" << std::fixed << std::setprecision(3)
+                << cmd.motion.O_T_EE_c[12] << "," << cmd.motion.O_T_EE_c[13] << "," << cmd.motion.O_T_EE_c[14] << "] ";
     }
     if (has_torque_cmd) {
-      std::cout << "tau=[" << cmd.control.tau_J_d[0] << ", " << cmd.control.tau_J_d[1] << ", " << cmd.control.tau_J_d[2] << "]";
-    } else {
-      std::cout << "tau=[0, 0, 0, ...]";
+      std::cout << "TORQUE tau=[" << std::fixed << std::setprecision(3)
+                << cmd.control.tau_J_d[0] << "," << cmd.control.tau_J_d[1] << "," << cmd.control.tau_J_d[2] << "]";
+    }
+    if (!has_position_cmd && !has_cartesian_cmd && !has_torque_cmd) {
+      std::cout << "NO_COMMANDS (all zeros)";
     }
     std::cout << std::endl;
   }
   
-  // Log first few commands to see initial behavior
+  // Log first few commands in detail
   if (cmd_count <= 5) {
-    std::cout << "[FCI] Initial Command #" << cmd_count << ": ";
-    std::cout << "tau=[" << cmd.control.tau_J_d[0] << ", " << cmd.control.tau_J_d[1] << ", " << cmd.control.tau_J_d[2] << ", ...]";
-    if (has_q_cmd || has_cartesian_cmd || has_torque_cmd) {
-      std::cout << " (NON-ZERO COMMANDS DETECTED!)";
+    std::cout << "[FCI] *** DETAILED COMMAND #" << cmd_count << " ***" << std::endl;
+    std::cout << "  Joint positions: [" << std::fixed << std::setprecision(4);
+    for (int i = 0; i < 7; ++i) {
+      std::cout << cmd.motion.q_c[i] << (i < 6 ? ", " : "");
     }
-    std::cout << std::endl;
+    std::cout << "]" << std::endl;
+    std::cout << "  Torques: [";
+    for (int i = 0; i < 7; ++i) {
+      std::cout << cmd.control.tau_J_d[i] << (i < 6 ? ", " : "");
+    }
+    std::cout << "]" << std::endl;
+    std::cout << "  Flags: pos=" << has_position_cmd << " cart=" << has_cartesian_cmd << " tau=" << has_torque_cmd << std::endl;
   }
 }
 
@@ -292,13 +371,14 @@ int main(int argc, char** argv) {
       &plant, InverseDynamics<double>::InverseDynamicsMode::kGravityCompensation);
   builder.Connect(plant.get_state_output_port(), g_comp->get_input_port_estimated_state());
 
-  // FCI torque input system
-  auto* fci_torque_sys = builder.AddSystem<FciTorqueSystem>();
+  // FCI position controller
+  auto* fci_position_controller = builder.AddSystem<FciPositionController>();
+  builder.Connect(plant.get_state_output_port(), fci_position_controller->get_input_port(fci_position_controller->get_state_input_port()));
 
   // Torque adder: gravity compensation + FCI commands
   auto* adder = builder.AddSystem<drake::systems::Adder<double>>(2, 7);
   builder.Connect(g_comp->get_output_port(), adder->get_input_port(0));
-  builder.Connect(fci_torque_sys->get_output_port(), adder->get_input_port(1));
+  builder.Connect(fci_position_controller->get_output_port(), adder->get_input_port(1));
   builder.Connect(adder->get_output_port(), plant.get_actuation_input_port());
 
   // Logging
@@ -370,6 +450,11 @@ int main(int argc, char** argv) {
         const auto& joint = plant.GetJointByName<drake::multibody::RevoluteJoint>(joint_names[i], robot);
         g_robot_state.q[i] = joint.get_angle(plant_context);
         g_robot_state.dq[i] = joint.get_angular_rate(plant_context);
+        
+        // For now, use simple gravity compensation torque estimate
+        // This gives libfranka realistic torque values to validate
+        double gravity_torque = 0.1 * sin(g_robot_state.q[i]); // Simple gravity model
+        g_robot_state.tau_J[i] = gravity_torque;
       }
       
       // Get end-effector pose

@@ -35,6 +35,12 @@ class FrankaFciSimServer {
  private:
   void server_thread();
   void handle_client_connection();
+  void handle_connect_command(const protocol::CommandHeader& header);
+  void handle_tcp_commands();
+  void handle_set_collision_behavior_command(const protocol::CommandHeader& header);
+  void handle_move_command(const protocol::CommandHeader& header);
+  void handle_stop_move_command(const protocol::CommandHeader& header);
+  void handle_generic_command(const protocol::CommandHeader& header);
   void udp_control_loop();
   void close_sockets();
 
@@ -55,7 +61,15 @@ class FrankaFciSimServer {
   struct sockaddr_in udp_client_addr_;
   bool udp_client_ready_ = false;
   
-  uint64_t message_id_ = 0;
+  // Mode tracking - CRITICAL for libfranka compatibility
+  protocol::Move::ControllerMode requested_controller_mode_ = protocol::Move::ControllerMode::kExternalController;
+  protocol::Move::MotionGeneratorMode requested_motion_generator_mode_ = protocol::Move::MotionGeneratorMode::kJointPosition;
+  
+  // Message ID counter for UDP
+  std::atomic<uint64_t> message_id_{1};
+  
+  // Control mode flag to switch from read-only to active control
+  std::atomic<bool> control_mode_active_{false};
 };
 
 }  // namespace franka_fci_sim 

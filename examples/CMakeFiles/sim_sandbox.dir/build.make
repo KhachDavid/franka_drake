@@ -92,11 +92,12 @@ sim_sandbox_EXTERNAL_OBJECTS =
 
 examples/sim_sandbox: examples/CMakeFiles/sim_sandbox.dir/sim_sandbox.cpp.o
 examples/sim_sandbox: examples/CMakeFiles/sim_sandbox.dir/build.make
+examples/sim_sandbox: src/libfranka_drake_module.a
 examples/sim_sandbox: /home/david/final_project/drake/lib/libdrake.so
-examples/sim_sandbox: /usr/lib/x86_64-linux-gnu/libPocoNet.so.80
 examples/sim_sandbox: /home/david/final_project/drake/lib/libdrake_marker.so
 examples/sim_sandbox: /usr/lib/x86_64-linux-gnu/libspdlog.so.1.12.0
 examples/sim_sandbox: /usr/lib/x86_64-linux-gnu/libfmt.so.9.1.0
+examples/sim_sandbox: /usr/lib/x86_64-linux-gnu/libPocoNet.so.80
 examples/sim_sandbox: /usr/lib/x86_64-linux-gnu/libPocoFoundation.so.80
 examples/sim_sandbox: /usr/lib/x86_64-linux-gnu/libpcre.so
 examples/sim_sandbox: /usr/lib/x86_64-linux-gnu/libz.so

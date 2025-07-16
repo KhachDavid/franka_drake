@@ -81,10 +81,11 @@ clean: examples/clean
 # Directory level rules for directory examples
 
 # Recursive "all" directory target.
+examples/all: examples/CMakeFiles/franka_fci_sim_server_main.dir/all
+examples/all: examples/CMakeFiles/test_robot_movement.dir/all
 examples/all: examples/CMakeFiles/drake_simple_example.dir/all
 examples/all: examples/CMakeFiles/run_simulator_server.dir/all
 examples/all: examples/CMakeFiles/sim_sandbox.dir/all
-examples/all: examples/CMakeFiles/franka_fci_sim_server_main.dir/all
 .PHONY : examples/all
 
 # Recursive "preinstall" directory target.
@@ -92,10 +93,11 @@ examples/preinstall:
 .PHONY : examples/preinstall
 
 # Recursive "clean" directory target.
+examples/clean: examples/CMakeFiles/franka_fci_sim_server_main.dir/clean
+examples/clean: examples/CMakeFiles/test_robot_movement.dir/clean
 examples/clean: examples/CMakeFiles/drake_simple_example.dir/clean
 examples/clean: examples/CMakeFiles/run_simulator_server.dir/clean
 examples/clean: examples/CMakeFiles/sim_sandbox.dir/clean
-examples/clean: examples/CMakeFiles/franka_fci_sim_server_main.dir/clean
 .PHONY : examples/clean
 
 #=============================================================================
@@ -138,6 +140,58 @@ franka_drake_module: src/CMakeFiles/franka_drake_module.dir/rule
 src/CMakeFiles/franka_drake_module.dir/clean:
 	$(MAKE) $(MAKESILENT) -f src/CMakeFiles/franka_drake_module.dir/build.make src/CMakeFiles/franka_drake_module.dir/clean
 .PHONY : src/CMakeFiles/franka_drake_module.dir/clean
+
+#=============================================================================
+# Target rules for target examples/CMakeFiles/franka_fci_sim_server_main.dir
+
+# All Build rule for target.
+examples/CMakeFiles/franka_fci_sim_server_main.dir/all: src/CMakeFiles/franka_drake_module.dir/all
+	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/depend
+	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/david/final_project/franka_drake/CMakeFiles --progress-num=7,8 "Built target franka_fci_sim_server_main"
+.PHONY : examples/CMakeFiles/franka_fci_sim_server_main.dir/all
+
+# Build rule for subdir invocation for target.
+examples/CMakeFiles/franka_fci_sim_server_main.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/david/final_project/franka_drake/CMakeFiles 6
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 examples/CMakeFiles/franka_fci_sim_server_main.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/david/final_project/franka_drake/CMakeFiles 0
+.PHONY : examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
+
+# Convenience name for target.
+franka_fci_sim_server_main: examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
+.PHONY : franka_fci_sim_server_main
+
+# clean rule for target.
+examples/CMakeFiles/franka_fci_sim_server_main.dir/clean:
+	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/clean
+.PHONY : examples/CMakeFiles/franka_fci_sim_server_main.dir/clean
+
+#=============================================================================
+# Target rules for target examples/CMakeFiles/test_robot_movement.dir
+
+# All Build rule for target.
+examples/CMakeFiles/test_robot_movement.dir/all: src/CMakeFiles/franka_drake_module.dir/all
+	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/test_robot_movement.dir/build.make examples/CMakeFiles/test_robot_movement.dir/depend
+	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/test_robot_movement.dir/build.make examples/CMakeFiles/test_robot_movement.dir/build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/david/final_project/franka_drake/CMakeFiles --progress-num=13,14 "Built target test_robot_movement"
+.PHONY : examples/CMakeFiles/test_robot_movement.dir/all
+
+# Build rule for subdir invocation for target.
+examples/CMakeFiles/test_robot_movement.dir/rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/david/final_project/franka_drake/CMakeFiles 6
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 examples/CMakeFiles/test_robot_movement.dir/all
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/david/final_project/franka_drake/CMakeFiles 0
+.PHONY : examples/CMakeFiles/test_robot_movement.dir/rule
+
+# Convenience name for target.
+test_robot_movement: examples/CMakeFiles/test_robot_movement.dir/rule
+.PHONY : test_robot_movement
+
+# clean rule for target.
+examples/CMakeFiles/test_robot_movement.dir/clean:
+	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/test_robot_movement.dir/build.make examples/CMakeFiles/test_robot_movement.dir/clean
+.PHONY : examples/CMakeFiles/test_robot_movement.dir/clean
 
 #=============================================================================
 # Target rules for target examples/CMakeFiles/drake_simple_example.dir
@@ -195,7 +249,7 @@ examples/CMakeFiles/run_simulator_server.dir/clean:
 # Target rules for target examples/CMakeFiles/sim_sandbox.dir
 
 # All Build rule for target.
-examples/CMakeFiles/sim_sandbox.dir/all:
+examples/CMakeFiles/sim_sandbox.dir/all: src/CMakeFiles/franka_drake_module.dir/all
 	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/sim_sandbox.dir/build.make examples/CMakeFiles/sim_sandbox.dir/depend
 	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/sim_sandbox.dir/build.make examples/CMakeFiles/sim_sandbox.dir/build
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/david/final_project/franka_drake/CMakeFiles --progress-num=11,12 "Built target sim_sandbox"
@@ -203,7 +257,7 @@ examples/CMakeFiles/sim_sandbox.dir/all:
 
 # Build rule for subdir invocation for target.
 examples/CMakeFiles/sim_sandbox.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/david/final_project/franka_drake/CMakeFiles 2
+	$(CMAKE_COMMAND) -E cmake_progress_start /home/david/final_project/franka_drake/CMakeFiles 6
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 examples/CMakeFiles/sim_sandbox.dir/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /home/david/final_project/franka_drake/CMakeFiles 0
 .PHONY : examples/CMakeFiles/sim_sandbox.dir/rule
@@ -216,32 +270,6 @@ sim_sandbox: examples/CMakeFiles/sim_sandbox.dir/rule
 examples/CMakeFiles/sim_sandbox.dir/clean:
 	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/sim_sandbox.dir/build.make examples/CMakeFiles/sim_sandbox.dir/clean
 .PHONY : examples/CMakeFiles/sim_sandbox.dir/clean
-
-#=============================================================================
-# Target rules for target examples/CMakeFiles/franka_fci_sim_server_main.dir
-
-# All Build rule for target.
-examples/CMakeFiles/franka_fci_sim_server_main.dir/all: src/CMakeFiles/franka_drake_module.dir/all
-	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/depend
-	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/build
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=/home/david/final_project/franka_drake/CMakeFiles --progress-num=7,8 "Built target franka_fci_sim_server_main"
-.PHONY : examples/CMakeFiles/franka_fci_sim_server_main.dir/all
-
-# Build rule for subdir invocation for target.
-examples/CMakeFiles/franka_fci_sim_server_main.dir/rule: cmake_check_build_system
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/david/final_project/franka_drake/CMakeFiles 6
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 examples/CMakeFiles/franka_fci_sim_server_main.dir/all
-	$(CMAKE_COMMAND) -E cmake_progress_start /home/david/final_project/franka_drake/CMakeFiles 0
-.PHONY : examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
-
-# Convenience name for target.
-franka_fci_sim_server_main: examples/CMakeFiles/franka_fci_sim_server_main.dir/rule
-.PHONY : franka_fci_sim_server_main
-
-# clean rule for target.
-examples/CMakeFiles/franka_fci_sim_server_main.dir/clean:
-	$(MAKE) $(MAKESILENT) -f examples/CMakeFiles/franka_fci_sim_server_main.dir/build.make examples/CMakeFiles/franka_fci_sim_server_main.dir/clean
-.PHONY : examples/CMakeFiles/franka_fci_sim_server_main.dir/clean
 
 #=============================================================================
 # Special targets to cleanup operation of make.

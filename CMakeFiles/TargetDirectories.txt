@@ -3,9 +3,10 @@
 /home/david/final_project/franka_drake/src/CMakeFiles/franka_drake_module.dir
 /home/david/final_project/franka_drake/src/CMakeFiles/edit_cache.dir
 /home/david/final_project/franka_drake/src/CMakeFiles/rebuild_cache.dir
+/home/david/final_project/franka_drake/examples/CMakeFiles/franka_fci_sim_server_main.dir
+/home/david/final_project/franka_drake/examples/CMakeFiles/test_robot_movement.dir
 /home/david/final_project/franka_drake/examples/CMakeFiles/drake_simple_example.dir
 /home/david/final_project/franka_drake/examples/CMakeFiles/run_simulator_server.dir
 /home/david/final_project/franka_drake/examples/CMakeFiles/sim_sandbox.dir
-/home/david/final_project/franka_drake/examples/CMakeFiles/franka_fci_sim_server_main.dir
 /home/david/final_project/franka_drake/examples/CMakeFiles/edit_cache.dir
 /home/david/final_project/franka_drake/examples/CMakeFiles/rebuild_cache.dir
