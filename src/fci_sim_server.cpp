@@ -85,7 +85,7 @@ void FrankaFciSimServer::run() {
   std::cout << "[FCI Sim Server] Binding TCP to port " << tcp_port_ << std::endl;
 
   if (bind(tcp_server_fd_, (struct sockaddr*)&tcp_addr, sizeof(tcp_addr)) < 0) {
-    std::cerr << "[FCI Sim Server] Failed to bind TCP socket" << std::endl;
+    std::cerr << "[FCI Sim Server] Failed to bind TCP socket: " << strerror(errno) << " (errno: " << errno << ")" << std::endl;
     close_sockets();
     return;
   }
@@ -99,13 +99,13 @@ void FrankaFciSimServer::run() {
   std::cout << "[FCI Sim Server] Binding UDP to port " << udp_port_ << std::endl;
 
   if (bind(udp_socket_fd_, (struct sockaddr*)&udp_addr, sizeof(udp_addr)) < 0) {
-    std::cerr << "[FCI Sim Server] Failed to bind UDP socket" << std::endl;
+    std::cerr << "[FCI Sim Server] Failed to bind UDP socket: " << strerror(errno) << " (errno: " << errno << ")" << std::endl;
     close_sockets();
     return;
   }
 
   if (listen(tcp_server_fd_, 1) < 0) {
-    std::cerr << "[FCI Sim Server] Failed to listen on TCP" << std::endl;
+    std::cerr << "[FCI Sim Server] Failed to listen on TCP: " << strerror(errno) << " (errno: " << errno << ")" << std::endl;
     close_sockets();
     return;
   }
