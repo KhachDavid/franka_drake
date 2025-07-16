@@ -35,4 +35,4 @@ Thumbs.db
 # Logs and temporary files
 *.log
 *.tmp
-*.bak
+*.bakplt/
