@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>franka_drake</name>
+  <version>1.0.0</version>
+  <description>Franka robot models for Drake simulation</description>
+  <maintainer email="user@example.com">Drake User</maintainer>
+  <license>MIT</license>
+  
+  <buildtool_depend>cmake</buildtool_depend>
+  
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package> 
