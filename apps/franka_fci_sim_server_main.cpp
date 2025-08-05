@@ -11,6 +11,7 @@
 #include <drake/systems/primitives/vector_log_sink.h>
 #include <drake/systems/controllers/inverse_dynamics.h>
 #include <drake/systems/primitives/adder.h>
+#include <drake/systems/primitives/demultiplexer.h>
 #include <drake/systems/analysis/runge_kutta5_integrator.h>
 #include <drake/math/rigid_transform.h>
 #include <Eigen/Core>
@@ -40,6 +41,21 @@ struct SharedRobotState {
   bool has_cartesian_command = false;
   // Track current controller mode for proper torque detection
   franka_fci_sim::protocol::Move::ControllerMode current_controller_mode = franka_fci_sim::protocol::Move::ControllerMode::kExternalController;
+  
+  // END EFFECTOR CONFIGURATION
+  std::string ee_frame_name = "fer_link7";  // Default to fingerless
+  bool has_gripper = false;                 // Whether gripper is present
+  double ee_mass = 0.35973;                 // Mass of end effector
+  std::array<double, 3> ee_com{0.00089, -0.00044, 0.05491}; // Center of mass offset
+  std::array<double, 9> ee_inertia{0.00019541063, 1.65231e-06, 1.48826e-06,
+                                   1.65231e-06, 0.00019210361, -1.31132e-06,
+                                   1.48826e-06, -1.31132e-06, 0.00017936256}; // Inertia tensor
+  
+  // GRIPPER STATE (if present)
+  std::array<double, 2> gripper_q{0.04, 0.04};    // Gripper joint positions (open)
+  std::array<double, 2> gripper_dq{0.0, 0.0};     // Gripper joint velocities
+  std::array<std::string, 2> gripper_joint_names{"", ""}; // Gripper joint names
+  int num_gripper_joints = 0;                     // Number of gripper joints found
 };
 
 // Global shared state
@@ -237,32 +253,140 @@ class ZieglerNicholsAutoTuner {
 // Global auto-tuner instance
 ZieglerNicholsAutoTuner g_zn_tuner;
 
+// DETECT END EFFECTOR CONFIGURATION
+std::pair<int, int> DetectEndEffectorConfiguration(const drake::multibody::MultibodyPlant<double>& plant, 
+                                                  const drake::multibody::ModelInstanceIndex& robot) {
+  std::lock_guard<std::mutex> lock(g_robot_state.mutex);
+  
+  // Count total joints in the robot
+  int num_arm_joints = 7;  // Standard Franka arm joints
+  int num_total_joints = plant.num_positions(robot);
+  
+  // Try to find different end effector frames in order of preference
+  std::vector<std::string> frame_candidates = {
+    "fer_hand_tcp",    // Tool center point (preferred for full gripper)
+    "fer_link8",       // Flange frame (alternative for full gripper)
+    "fer_hand",        // Hand frame (basic gripper)
+    "fer_link7"        // Wrist frame (fingerless configuration)
+  };
+  
+  for (const auto& frame_name : frame_candidates) {
+    try {
+      plant.GetFrameByName(frame_name, robot);
+      g_robot_state.ee_frame_name = frame_name;
+      std::cout << "[EE CONFIG] Found end effector frame: " << frame_name << std::endl;
+      break;
+    } catch (const std::exception&) {
+      // Frame not found, continue searching
+      continue;
+    }
+  }
+  
+  // Detect if we have a gripper by checking for gripper frames
+  try {
+    plant.GetFrameByName("fer_hand", robot);
+    g_robot_state.has_gripper = true;
+    std::cout << "[EE CONFIG] Gripper detected!" << std::endl;
+    
+    // Detect gripper joints
+    std::vector<std::string> gripper_candidates = {"fer_finger_joint1", "fer_finger_joint2"};
+    g_robot_state.num_gripper_joints = 0;
+    
+    for (const auto& joint_name : gripper_candidates) {
+      try {
+        plant.GetJointByName(joint_name, robot);
+        if (g_robot_state.num_gripper_joints < 2) {
+          g_robot_state.gripper_joint_names[g_robot_state.num_gripper_joints] = joint_name;
+          g_robot_state.num_gripper_joints++;
+          std::cout << "[EE CONFIG] Found gripper joint: " << joint_name << std::endl;
+        }
+      } catch (const std::exception&) {
+        // Joint not found, continue
+        continue;
+      }
+    }
+    
+    // Set gripper-specific parameters
+    if (g_robot_state.ee_frame_name == "fer_hand_tcp") {
+      // Franka Hand + TCP parameters (Hand mass + offset to TCP)
+      g_robot_state.ee_mass = 0.73;  // Franka Hand mass
+      g_robot_state.ee_com = {0.0, 0.0, 0.058};  // TCP is ~58mm above hand
+      g_robot_state.ee_inertia = {0.001, 0.0, 0.0,
+                                  0.0, 0.0025, 0.0,
+                                  0.0, 0.0, 0.0017}; // Hand inertia
+    } else if (g_robot_state.ee_frame_name == "fer_hand") {
+      // Pure Franka Hand parameters
+      g_robot_state.ee_mass = 0.73;
+      g_robot_state.ee_com = {-0.01, 0.0, 0.03};  // Hand COM offset
+      g_robot_state.ee_inertia = {0.001, 0.0, 0.0,
+                                  0.0, 0.0025, 0.0,
+                                  0.0, 0.0, 0.0017};
+    }
+  } catch (const std::exception&) {
+    g_robot_state.has_gripper = false;
+    g_robot_state.num_gripper_joints = 0;
+    std::cout << "[EE CONFIG] No gripper detected - fingerless configuration" << std::endl;
+    
+    // Fingerless configuration - use link7 parameters
+    g_robot_state.ee_mass = 0.35973;  // Just the wrist
+    g_robot_state.ee_com = {0.00089, -0.00044, 0.05491};
+    g_robot_state.ee_inertia = {0.00019541063, 1.65231e-06, 1.48826e-06,
+                                1.65231e-06, 0.00019210361, -1.31132e-06,
+                                1.48826e-06, -1.31132e-06, 0.00017936256};
+  }
+  
+  std::cout << "[EE CONFIG] Final configuration:" << std::endl;
+  std::cout << "  Frame: " << g_robot_state.ee_frame_name << std::endl;
+  std::cout << "  Has gripper: " << (g_robot_state.has_gripper ? "YES" : "NO") << std::endl;
+  std::cout << "  Gripper joints: " << g_robot_state.num_gripper_joints << std::endl;
+  std::cout << "  Total joints: " << num_total_joints << " (arm: " << num_arm_joints << ")" << std::endl;
+  std::cout << "  Mass: " << g_robot_state.ee_mass << " kg" << std::endl;
+  std::cout << "  COM: [" << g_robot_state.ee_com[0] << ", " << g_robot_state.ee_com[1] << ", " << g_robot_state.ee_com[2] << "]" << std::endl;
+  
+  return {num_arm_joints, num_total_joints};
+}
+
 // Drake system to provide FCI commands as input - SIMPLE WORKING PID CONTROLLER
 class FciPidController final : public drake::systems::LeafSystem<double> {
  public:
-   FciPidController() {
-     // Declare input ports for current robot state
-     state_input_port_ = this->DeclareVectorInputPort("robot_state", drake::systems::BasicVector<double>(14)).get_index();
-     
-     // Declare output port for computed control torques
-     this->DeclareVectorOutputPort("control_torques", drake::systems::BasicVector<double>(7),
-                                  &FciPidController::CalcControlTorques);
-     
-     // Initialize PID gains with REASONABLE values
-     // Start with the working PD gains and add modest integral terms
-     kp_ << 150, 150, 120, 120, 80, 60, 40;   // Working proportional gains
-     ki_ << 0, 0, 0, 0, 0, 0, 0;       // Modest integral gains  
-     kd_ << 0, 0, 0, 0, 0, 0  , 0;          // Working derivative gains
-     
-     // Initialize state variables
-     integral_error_.setZero();
-     first_call_ = true;
-     
-     std::cout << "[PID Controller] Initialized with gains:" << std::endl;
-     std::cout << "  Kp: [" << kp_.transpose() << "]" << std::endl;
-     std::cout << "  Ki: [" << ki_.transpose() << "]" << std::endl;
-     std::cout << "  Kd: [" << kd_.transpose() << "]" << std::endl;
-   }
+  FciPidController() {
+    // We'll declare ports after we know the robot configuration
+    // This will be updated after robot detection
+    expected_num_arm_joints_ = 7;  // Default to arm joints only
+    expected_num_total_joints_ = 7;
+    
+    // Initialize PID gains with REASONABLE values
+    // Start with the working PD gains and add modest integral terms
+    kp_ << 150, 150, 120, 120, 80, 60, 40;   // Working proportional gains
+    ki_ << 0, 0, 0, 0, 0, 0, 0;       // Modest integral gains  
+    kd_ << 0, 0, 0, 0, 0, 0, 0;          // Working derivative gains
+    
+    // Initialize state variables
+    integral_error_.setZero();
+    first_call_ = true;
+    
+    std::cout << "[PID Controller] Initialized with gains:" << std::endl;
+    std::cout << "  Kp: [" << kp_.transpose() << "]" << std::endl;
+    std::cout << "  Ki: [" << ki_.transpose() << "]" << std::endl;
+    std::cout << "  Kd: [" << kd_.transpose() << "]" << std::endl;
+  }
+  
+  // Configure the controller for the detected robot configuration
+  void ConfigureForRobot(int num_arm_joints, int num_total_joints) {
+    expected_num_arm_joints_ = num_arm_joints;
+    expected_num_total_joints_ = num_total_joints;
+    
+    // Declare input ports for current robot state (positions + velocities)
+    int state_size = 2 * num_total_joints;  // positions + velocities
+    state_input_port_ = this->DeclareVectorInputPort("robot_state", drake::systems::BasicVector<double>(state_size)).get_index();
+    
+    // Declare output port for computed control torques (only for arm joints)
+    this->DeclareVectorOutputPort("control_torques", drake::systems::BasicVector<double>(num_arm_joints),
+                                 &FciPidController::CalcControlTorques);
+    
+    std::cout << "[PID Controller] Configured for " << num_total_joints 
+              << " total joints (" << num_arm_joints << " arm joints)" << std::endl;
+  }
 
    // Public accessor for state input port
    int get_state_input_port() const { return state_input_port_; }
@@ -283,12 +407,12 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
                           drake::systems::BasicVector<double>* output) const {
      std::lock_guard<std::mutex> lock(g_robot_state.mutex);
      
-     Eigen::VectorXd control_torques(7);
+     Eigen::VectorXd control_torques(expected_num_arm_joints_); // Use expected_num_arm_joints_
      
      // IMPORTANT: Check torque control mode FIRST - no PID calculations at all!
      if (g_robot_state.has_torque_command) {
        // PURE TORQUE CONTROL: Direct torque pass-through, no PID at all
-       for (int i = 0; i < 7; ++i) {
+       for (int i = 0; i < expected_num_arm_joints_; ++i) { // Use expected_num_arm_joints_
          control_torques[i] = g_robot_state.tau_cmd[i];
        }
        
@@ -304,7 +428,7 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
        
        // Apply torque limits for safety and output immediately
        const double max_torque = 50.0;
-       for (int i = 0; i < 7; ++i) {
+       for (int i = 0; i < expected_num_arm_joints_; ++i) { // Use expected_num_arm_joints_
          control_torques[i] = std::max(-max_torque, std::min(max_torque, control_torques[i]));
        }
        
@@ -318,17 +442,17 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
        const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
        
        // Extract current positions and velocities
-       Eigen::VectorXd current_q = state_input.head(7);   // positions
-       Eigen::VectorXd current_dq = state_input.tail(7);  // velocities
+       Eigen::VectorXd current_q = state_input.head(expected_num_total_joints_); // Use expected_num_total_joints_
+       Eigen::VectorXd current_dq = state_input.tail(expected_num_total_joints_); // Use expected_num_total_joints_
        
        // POSITION CONTROL: Use PID controller to track commanded positions
-       Eigen::VectorXd target_q(7);
-       for (int i = 0; i < 7; ++i) {
+       Eigen::VectorXd target_q(expected_num_arm_joints_); // Use expected_num_arm_joints_
+       for (int i = 0; i < expected_num_arm_joints_; ++i) {
          target_q[i] = g_robot_state.q_cmd[i];
        }
        
-       // Calculate position error
-       Eigen::VectorXd position_error = target_q - current_q;
+       // Calculate position error (only for arm joints)
+       Eigen::VectorXd position_error = target_q - current_q.head(expected_num_arm_joints_);
        
        // Handle first call - initialize previous time properly
        double current_time = context.get_time();
@@ -344,7 +468,7 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
        }
        
        // Update integral error with simple anti-windup
-       for (int i = 0; i < 7; ++i) {
+       for (int i = 0; i < expected_num_arm_joints_; ++i) {
          // Only integrate if error is significant and we're not saturated
          if (std::abs(position_error[i]) > 1e-6) {
            double tentative_integral = integral_error_[i] + position_error[i] * dt;
@@ -361,12 +485,12 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
        // PID control law: τ = Kp*e + Ki*∫e*dt + Kd*(-dq)
        Eigen::VectorXd proportional_term = kp_.cwiseProduct(position_error);
        Eigen::VectorXd integral_term = ki_.cwiseProduct(integral_error_);
-       Eigen::VectorXd derivative_term = kd_.cwiseProduct(-current_dq);  // velocity feedback
+       Eigen::VectorXd derivative_term = kd_.cwiseProduct(-current_dq.head(expected_num_arm_joints_));  // velocity feedback for arm joints only
        
        control_torques = proportional_term + integral_term + derivative_term;
        
        // Small bias for libfranka responsiveness (only if really needed)
-       for (int i = 0; i < 7; ++i) {
+       for (int i = 0; i < expected_num_arm_joints_; ++i) {
          if (std::abs(position_error[i]) < 1e-8 && std::abs(control_torques[i]) < 0.1) {
            control_torques[i] += (i % 2 == 0 ? 0.05 : -0.05);
          }
@@ -376,7 +500,7 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
        static int pid_debug_count = 0;
        if (++pid_debug_count % 2000 == 0) {  // Every 2 seconds at 1kHz
          std::cout << "[PID MODE] Target: [" << target_q.transpose() << "]" << std::endl;
-         std::cout << "[PID MODE] Current: [" << current_q.transpose() << "]" << std::endl;
+         std::cout << "[PID MODE] Current: [" << current_q.head(expected_num_arm_joints_).transpose() << "]" << std::endl;
          std::cout << "[PID MODE] Error: [" << position_error.transpose() << "]" << std::endl;
          std::cout << "[PID MODE] P: [" << proportional_term.transpose() << "]" << std::endl;
          std::cout << "[PID MODE] I: [" << integral_term.transpose() << "]" << std::endl;
@@ -387,7 +511,7 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
        previous_time_ = current_time;
        
        // Add any additional direct torque commands from libfranka (if any)
-       for (int i = 0; i < 7; ++i) {
+       for (int i = 0; i < expected_num_arm_joints_; ++i) {
          control_torques[i] += g_robot_state.tau_cmd[i];
        }
        
@@ -408,7 +532,7 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
      
      // Apply torque limits for safety
      const double max_torque = 50.0;
-     for (int i = 0; i < 7; ++i) {
+     for (int i = 0; i < expected_num_arm_joints_; ++i) {
        control_torques[i] = std::max(-max_torque, std::min(max_torque, control_torques[i]));
      }
      
@@ -417,6 +541,10 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
    
    // Member variables
    int state_input_port_;
+   
+   // Robot configuration
+   int expected_num_arm_joints_;    // Number of arm joints (usually 7)
+   int expected_num_total_joints_;  // Total joints including gripper
    
    // PID gains (fixed size, reasonable values)
    Eigen::VectorXd kp_{7};  // Proportional gains
@@ -464,17 +592,17 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   state.NE_T_EE[0] = state.NE_T_EE[5] = state.NE_T_EE[10] = state.NE_T_EE[15] = 1.0; // Identity
   
   // Realistic end-effector parameters (CRITICAL for libfranka!)
-  state.m_ee = 0.73;  // Franka gripper mass in kg
+  state.m_ee = g_robot_state.ee_mass;  // Use detected EE mass
   state.m_load = 0.0; // No additional load
   
   // Realistic end-effector inertia tensor (6 values: Ixx, Iyy, Izz, Ixy, Ixz, Iyz)
-  // Based on Franka gripper specifications 
-  state.I_ee[0] = 0.001;  // Ixx
-  state.I_ee[1] = 0.0025; // Iyy  
-  state.I_ee[2] = 0.0017; // Izz
-  state.I_ee[3] = 0.0;    // Ixy
-  state.I_ee[4] = 0.0;    // Ixz
-  state.I_ee[5] = 0.0;    // Iyz
+  // Use detected end effector inertia parameters
+  state.I_ee[0] = g_robot_state.ee_inertia[0];  // Ixx
+  state.I_ee[1] = g_robot_state.ee_inertia[4];  // Iyy  
+  state.I_ee[2] = g_robot_state.ee_inertia[8];  // Izz
+  state.I_ee[3] = g_robot_state.ee_inertia[1];  // Ixy
+  state.I_ee[4] = g_robot_state.ee_inertia[2];  // Ixz
+  state.I_ee[5] = g_robot_state.ee_inertia[5];  // Iyz
   state.I_ee[6] = 0.0;    // (padding)
   state.I_ee[7] = 0.0;    // (padding)
   state.I_ee[8] = 0.0;    // (padding)
@@ -483,9 +611,9 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   state.I_load.fill(0.0);
   
   // Center of mass position for end-effector (relative to flange)
-  state.F_x_Cee[0] = 0.0;   // x
-  state.F_x_Cee[1] = 0.0;   // y  
-  state.F_x_Cee[2] = 0.058; // z (gripper center of mass ~58mm from flange)
+  state.F_x_Cee[0] = g_robot_state.ee_com[0];   // x
+  state.F_x_Cee[1] = g_robot_state.ee_com[1];   // y  
+  state.F_x_Cee[2] = g_robot_state.ee_com[2];   // z
   
   state.F_x_Cload.fill(0.0); // No load
   
@@ -731,6 +859,9 @@ int main(int argc, char** argv) {
 
   plant.Finalize();
 
+  // DETECT END EFFECTOR CONFIGURATION
+  auto [num_arm_joints, num_total_joints] = DetectEndEffectorConfiguration(plant, robot);
+
   // Visualization (only if not headless)
   std::shared_ptr<drake::geometry::Meshcat> meshcat;
   if (!headless) {
@@ -746,13 +877,34 @@ int main(int argc, char** argv) {
 
   // FCI position controller
   auto* fci_position_controller = builder.AddSystem<FciPidController>();
+  fci_position_controller->ConfigureForRobot(num_arm_joints, num_total_joints);
   builder.Connect(plant.get_state_output_port(), fci_position_controller->get_input_port(fci_position_controller->get_state_input_port()));
 
-  // Torque adder: gravity compensation + FCI commands
-  auto* adder = builder.AddSystem<drake::systems::Adder<double>>(2, 7);
-  builder.Connect(g_comp->get_output_port(), adder->get_input_port(0));
-  builder.Connect(fci_position_controller->get_output_port(), adder->get_input_port(1));
-  builder.Connect(adder->get_output_port(), plant.get_actuation_input_port());
+  // Handle gravity compensation based on robot configuration
+  drake::systems::Adder<double>* adder = nullptr;
+  
+  if (num_total_joints > num_arm_joints) {
+    // Robot with gripper: select only arm joint torques from gravity compensation
+    auto* gravity_selector = builder.AddSystem<drake::systems::Demultiplexer<double>>(
+      std::vector<int>{num_arm_joints, num_total_joints - num_arm_joints});  // Split into arm joints + gripper joints
+    builder.Connect(g_comp->get_output_port(), gravity_selector->get_input_port());
+    
+    // Torque adder: gravity compensation (arm joints only) + FCI commands
+    adder = builder.AddSystem<drake::systems::Adder<double>>(2, num_arm_joints);
+    builder.Connect(gravity_selector->get_output_port(0), adder->get_input_port(0));  // Use selected gravity torques
+    builder.Connect(fci_position_controller->get_output_port(), adder->get_input_port(1));
+    
+    // Connect arm torques to the plant
+    builder.Connect(adder->get_output_port(), plant.get_actuation_input_port());
+  } else {
+    // Fingerless robot: use gravity compensation directly
+    adder = builder.AddSystem<drake::systems::Adder<double>>(2, num_arm_joints);
+    builder.Connect(g_comp->get_output_port(), adder->get_input_port(0));  // Direct gravity torques
+    builder.Connect(fci_position_controller->get_output_port(), adder->get_input_port(1));
+    
+    // Connect arm torques to the plant
+    builder.Connect(adder->get_output_port(), plant.get_actuation_input_port());
+  }
 
   // Logging
   const int n_state = plant.num_positions() + plant.num_velocities();
@@ -872,8 +1024,32 @@ int main(int argc, char** argv) {
         g_robot_state.tau_J[i] = gravity_torque;
       }
       
+      // Extract gripper joint states (if present)
+      if (g_robot_state.has_gripper && g_robot_state.num_gripper_joints > 0) {
+        for (int i = 0; i < g_robot_state.num_gripper_joints; ++i) {
+          try {
+            // Use more general joint access that works with any joint type
+            const auto& joint = plant.GetJointByName(g_robot_state.gripper_joint_names[i], robot);
+            
+            // Check if it's a prismatic joint and get the position
+            if (joint.num_positions() == 1) {
+              g_robot_state.gripper_q[i] = plant.GetPositions(plant_context, robot)[7 + i];  // Assuming gripper joints come after arm joints
+              g_robot_state.gripper_dq[i] = plant.GetVelocities(plant_context, robot)[7 + i];
+            }
+          } catch (const std::exception& e) {
+            // If reading fails, keep previous values
+            // This can happen if joint type is wrong or joint doesn't exist
+            static int gripper_error_count = 0;
+            if (++gripper_error_count % 1000 == 0) {  // Log occasionally
+              std::cout << "[GRIPPER WARNING] Failed to read joint " << g_robot_state.gripper_joint_names[i] 
+                        << ": " << e.what() << std::endl;
+            }
+          }
+        }
+      }
+      
       // Get end-effector pose
-      const auto& ee_frame = plant.GetFrameByName("fer_link7", robot);
+      const auto& ee_frame = plant.GetFrameByName(g_robot_state.ee_frame_name, robot);
       const auto& world_frame = plant.world_frame();
       const drake::math::RigidTransformd X_W_EE = plant.CalcRelativeTransform(plant_context, world_frame, ee_frame);
       const Eigen::Matrix4d T_matrix = X_W_EE.GetAsMatrix4();
@@ -933,6 +1109,14 @@ int main(int argc, char** argv) {
         }
         std::cout << "] ";
         std::cout << "cmds=[" << g_robot_state.has_position_command << g_robot_state.has_cartesian_command << g_robot_state.has_torque_command << "]";
+        if (g_robot_state.has_gripper && g_robot_state.num_gripper_joints > 0) {
+          std::cout << " gripper=[";
+          for (int i = 0; i < g_robot_state.num_gripper_joints; ++i) {
+            std::cout << std::fixed << std::setprecision(4) << g_robot_state.gripper_q[i];
+            if (i < g_robot_state.num_gripper_joints - 1) std::cout << ", ";
+          }
+          std::cout << "]";
+        }
         if (movement_detected) {
           std::cout << " *** MOVEMENT DETECTED! ***";
         }
@@ -978,7 +1162,18 @@ int main(int argc, char** argv) {
         std::cout << "  Commands: pos=" << g_robot_state.has_position_command 
                   << " cart=" << g_robot_state.has_cartesian_command 
                   << " tau=" << g_robot_state.has_torque_command 
-                  << ", EE_z=" << std::fixed << std::setprecision(4) << g_robot_state.O_T_EE[14] << std::endl;
+                  << ", EE_z=" << std::fixed << std::setprecision(4) << g_robot_state.O_T_EE[14];
+        
+        if (g_robot_state.has_gripper && g_robot_state.num_gripper_joints > 0) {
+          std::cout << ", Gripper: [";
+          for (int i = 0; i < g_robot_state.num_gripper_joints; ++i) {
+            std::cout << std::fixed << std::setprecision(4) << g_robot_state.gripper_q[i];
+            if (i < g_robot_state.num_gripper_joints - 1) std::cout << ", ";
+          }
+          std::cout << "]";
+        }
+        
+        std::cout << std::endl;
       }
       last_log_time = now;
     }
