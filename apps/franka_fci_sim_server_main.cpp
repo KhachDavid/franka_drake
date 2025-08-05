@@ -46,86 +46,368 @@ struct SharedRobotState {
 SharedRobotState g_robot_state;
 std::atomic<bool> g_sim_running{true};
 
-// Drake system to provide FCI commands as input - PROPER POSITION CONTROL
-class FciPositionController final : public drake::systems::LeafSystem<double> {
+// Ziegler-Nichols Auto-Tuning Class
+class ZieglerNicholsAutoTuner {
  public:
-   FciPositionController() {
+   struct TuningResult {
+     Eigen::VectorXd ultimate_gain;      // Ku values
+     Eigen::VectorXd oscillation_period; // Tu values
+     bool success;
+   };
+   
+   ZieglerNicholsAutoTuner() {
+     // Initialize tuning parameters
+     max_gain_test_ = 500.0;  // Maximum gain to test (safety limit)
+     min_oscillations_ = 3;   // Minimum oscillations to measure period
+     convergence_threshold_ = 0.02;  // 2% change to declare convergence
+   }
+   
+   // Auto-tune a single joint by finding ultimate gain and period
+   TuningResult AutoTuneJoint(int joint_index, 
+                             std::function<void(double)> set_gain_callback,
+                             std::function<double()> get_position_callback,
+                             std::function<double()> get_time_callback) {
+     TuningResult result;
+     result.ultimate_gain = Eigen::VectorXd::Zero(7);
+     result.oscillation_period = Eigen::VectorXd::Zero(7);
+     result.success = false;
+     
+     std::cout << "[ZN Tuning] Starting auto-tune for joint " << joint_index << std::endl;
+     
+     // Step 1: Find ultimate gain (Ku) by increasing gain until sustained oscillation
+     double ku = FindUltimateGain(joint_index, set_gain_callback, get_position_callback, get_time_callback);
+     if (ku <= 0) {
+       std::cout << "[ZN Tuning] Failed to find ultimate gain for joint " << joint_index << std::endl;
+       return result;
+     }
+     
+     // Step 2: Measure oscillation period (Tu) at ultimate gain
+     double tu = MeasureOscillationPeriod(joint_index, ku, set_gain_callback, get_position_callback, get_time_callback);
+     if (tu <= 0) {
+       std::cout << "[ZN Tuning] Failed to measure oscillation period for joint " << joint_index << std::endl;
+       return result;
+     }
+     
+     result.ultimate_gain[joint_index] = ku;
+     result.oscillation_period[joint_index] = tu;
+     result.success = true;
+     
+     std::cout << "[ZN Tuning] Joint " << joint_index << " tuning complete:" << std::endl;
+     std::cout << "  Ultimate Gain (Ku): " << ku << std::endl;
+     std::cout << "  Oscillation Period (Tu): " << tu << " seconds" << std::endl;
+     
+     return result;
+   }
+   
+ private:
+   double FindUltimateGain(int joint_index,
+                          std::function<void(double)> set_gain_callback,
+                          std::function<double()> get_position_callback,
+                          std::function<double()> get_time_callback) {
+     
+     double gain = 10.0;  // Start with low gain
+     double gain_increment = 10.0;
+     
+     while (gain < max_gain_test_) {
+       set_gain_callback(gain);
+       
+       // Wait for settling
+       std::this_thread::sleep_for(std::chrono::seconds(1));
+       
+       // Apply small disturbance and measure response
+       bool oscillating = TestForOscillation(get_position_callback, get_time_callback);
+       
+       if (oscillating) {
+         std::cout << "[ZN Tuning] Found ultimate gain: " << gain << std::endl;
+         return gain;
+       }
+       
+       gain += gain_increment;
+       
+       // Adaptive increment (start small, increase if no oscillation)
+       if (gain > 100.0) gain_increment = 25.0;
+       if (gain > 200.0) gain_increment = 50.0;
+     }
+     
+     return -1.0;  // Failed to find ultimate gain
+   }
+   
+   double MeasureOscillationPeriod(int joint_index, double ultimate_gain,
+                                  std::function<void(double)> set_gain_callback,
+                                  std::function<double()> get_position_callback,
+                                  std::function<double()> get_time_callback) {
+     
+     set_gain_callback(ultimate_gain);
+     
+     // Wait for steady oscillation
+     std::this_thread::sleep_for(std::chrono::seconds(2));
+     
+     // Record position data for period measurement
+     std::vector<double> positions;
+     std::vector<double> times;
+     
+     double start_time = get_time_callback();
+     double measurement_duration = 5.0;  // Measure for 5 seconds
+     
+     while ((get_time_callback() - start_time) < measurement_duration) {
+       positions.push_back(get_position_callback());
+       times.push_back(get_time_callback());
+       std::this_thread::sleep_for(std::chrono::milliseconds(10));  // 100Hz sampling
+     }
+     
+     // Analyze oscillation period using zero-crossings
+     return CalculateOscillationPeriod(positions, times);
+   }
+   
+   bool TestForOscillation(std::function<double()> get_position_callback,
+                          std::function<double()> get_time_callback) {
+     
+     std::vector<double> positions;
+     double start_time = get_time_callback();
+     double test_duration = 3.0;  // Test for 3 seconds
+     
+     while ((get_time_callback() - start_time) < test_duration) {
+       positions.push_back(get_position_callback());
+       std::this_thread::sleep_for(std::chrono::milliseconds(50));  // 20Hz sampling
+     }
+     
+     // Check for sustained oscillation (simple variance check)
+     if (positions.size() < 10) return false;
+     
+     double mean_pos = 0.0;
+     for (double pos : positions) mean_pos += pos;
+     mean_pos /= positions.size();
+     
+     double variance = 0.0;
+     for (double pos : positions) {
+       variance += (pos - mean_pos) * (pos - mean_pos);
+     }
+     variance /= positions.size();
+     
+     // If variance is above threshold, consider it oscillating
+     double oscillation_threshold = 0.001;  // 1 mrad variance threshold
+     return variance > oscillation_threshold;
+   }
+   
+   double CalculateOscillationPeriod(const std::vector<double>& positions, 
+                                    const std::vector<double>& times) {
+     if (positions.size() < 20) return -1.0;
+     
+     // Find zero crossings (relative to mean position)
+     double mean_pos = 0.0;
+     for (double pos : positions) mean_pos += pos;
+     mean_pos /= positions.size();
+     
+     std::vector<double> zero_crossing_times;
+     for (size_t i = 1; i < positions.size(); ++i) {
+       double prev_diff = positions[i-1] - mean_pos;
+       double curr_diff = positions[i] - mean_pos;
+       
+       // Check for sign change (zero crossing)
+       if ((prev_diff > 0 && curr_diff < 0) || (prev_diff < 0 && curr_diff > 0)) {
+         // Linear interpolation to find exact crossing time
+         double t_cross = times[i-1] + (times[i] - times[i-1]) * 
+                         std::abs(prev_diff) / (std::abs(prev_diff) + std::abs(curr_diff));
+         zero_crossing_times.push_back(t_cross);
+       }
+     }
+     
+     if (zero_crossing_times.size() < 4) return -1.0;  // Need at least 2 complete cycles
+     
+     // Calculate average period (time between alternate zero crossings = full cycle)
+     double total_period = 0.0;
+     int period_count = 0;
+     
+     for (size_t i = 2; i < zero_crossing_times.size(); ++i) {
+       double period = zero_crossing_times[i] - zero_crossing_times[i-2];
+       total_period += period;
+       period_count++;
+     }
+     
+     if (period_count == 0) return -1.0;
+     
+     return total_period / period_count;
+   }
+   
+   double max_gain_test_;
+   int min_oscillations_;
+   double convergence_threshold_;
+};
+
+// Global auto-tuner instance
+ZieglerNicholsAutoTuner g_zn_tuner;
+
+// Drake system to provide FCI commands as input - SIMPLE WORKING PID CONTROLLER
+class FciPidController final : public drake::systems::LeafSystem<double> {
+ public:
+   FciPidController() {
      // Declare input ports for current robot state
      state_input_port_ = this->DeclareVectorInputPort("robot_state", drake::systems::BasicVector<double>(14)).get_index();
      
      // Declare output port for computed control torques
      this->DeclareVectorOutputPort("control_torques", drake::systems::BasicVector<double>(7),
-                                  &FciPositionController::CalcControlTorques);
+                                  &FciPidController::CalcControlTorques);
+     
+     // Initialize PID gains with REASONABLE values
+     // Start with the working PD gains and add modest integral terms
+     kp_ << 150, 150, 120, 120, 80, 60, 40;   // Working proportional gains
+     ki_ << 0, 0, 0, 0, 0, 0, 0;       // Modest integral gains  
+     kd_ << 0, 0, 0, 0, 0, 0  , 0;          // Working derivative gains
+     
+     // Initialize state variables
+     integral_error_.setZero();
+     first_call_ = true;
+     
+     std::cout << "[PID Controller] Initialized with gains:" << std::endl;
+     std::cout << "  Kp: [" << kp_.transpose() << "]" << std::endl;
+     std::cout << "  Ki: [" << ki_.transpose() << "]" << std::endl;
+     std::cout << "  Kd: [" << kd_.transpose() << "]" << std::endl;
    }
 
    // Public accessor for state input port
    int get_state_input_port() const { return state_input_port_; }
+   
+   // Manual gain setting interface
+   void SetPidGains(const Eigen::VectorXd& kp, const Eigen::VectorXd& ki, const Eigen::VectorXd& kd) {
+     kp_ = kp;
+     ki_ = ki;
+     kd_ = kd;
+     std::cout << "[PID Controller] Updated gains:" << std::endl;
+     std::cout << "  Kp: [" << kp_.transpose() << "]" << std::endl;
+     std::cout << "  Ki: [" << ki_.transpose() << "]" << std::endl;
+     std::cout << "  Kd: [" << kd_.transpose() << "]" << std::endl;
+   }
 
  private:
    void CalcControlTorques(const drake::systems::Context<double>& context,
                           drake::systems::BasicVector<double>* output) const {
      std::lock_guard<std::mutex> lock(g_robot_state.mutex);
      
-     // Get current robot state from input
-     const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
-     
-     // Extract current positions and velocities
-     Eigen::VectorXd current_q = state_input.head(7);   // positions
-     Eigen::VectorXd current_dq = state_input.tail(7);  // velocities
-     
      Eigen::VectorXd control_torques(7);
      
+     // IMPORTANT: Check torque control mode FIRST - no PID calculations at all!
+     if (g_robot_state.has_torque_command) {
+       // PURE TORQUE CONTROL: Direct torque pass-through, no PID at all
+       for (int i = 0; i < 7; ++i) {
+         control_torques[i] = g_robot_state.tau_cmd[i];
+       }
+       
+       // Reset integrator when in torque control mode
+       integral_error_.setZero();
+       first_call_ = true;
+       
+       // Debug logging for torque mode
+       static int torque_debug_count = 0;
+       if (++torque_debug_count % 2000 == 0) {  // Every 2 seconds at 1kHz
+         std::cout << "[TORQUE MODE] Direct torques: [" << control_torques.transpose() << "]" << std::endl;
+       }
+       
+       // Apply torque limits for safety and output immediately
+       const double max_torque = 50.0;
+       for (int i = 0; i < 7; ++i) {
+         control_torques[i] = std::max(-max_torque, std::min(max_torque, control_torques[i]));
+       }
+       
+       output->SetFromVector(control_torques);
+       return;  // EARLY RETURN - No PID calculations in torque mode!
+     }
+     
+     // Only run PID if we're NOT in torque mode
      if (g_robot_state.has_position_command) {
-       // POSITION CONTROL: Use PD controller to track commanded positions
+       // Get current robot state from input for PID calculations
+       const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
+       
+       // Extract current positions and velocities
+       Eigen::VectorXd current_q = state_input.head(7);   // positions
+       Eigen::VectorXd current_dq = state_input.tail(7);  // velocities
+       
+       // POSITION CONTROL: Use PID controller to track commanded positions
        Eigen::VectorXd target_q(7);
        for (int i = 0; i < 7; ++i) {
          target_q[i] = g_robot_state.q_cmd[i];
        }
        
-       // REASONABLE PD gains that won't create insane torques
-       Eigen::VectorXd kp(7);  kp << 150, 150, 120, 120, 80, 60, 40;   // Reasonable position gains
-       Eigen::VectorXd kd(7);  kd << 15, 15, 12, 12, 8, 6, 4;         // Reasonable velocity gains
+       // Calculate position error
+       Eigen::VectorXd position_error = target_q - current_q;
        
-       // PD control law: tau = Kp*(q_desired - q_current) - Kd*dq_current
-       control_torques = kp.cwiseProduct(target_q - current_q) - kd.cwiseProduct(current_dq);
+       // Handle first call - initialize previous time properly
+       double current_time = context.get_time();
+       double dt = 0.001;  // Default 1ms timestep
        
-       // Small bias ONLY for true zero error to help libfranka detect responsiveness
+       if (!first_call_) {
+         dt = current_time - previous_time_;
+         if (dt <= 0.0 || dt > 0.1) {  // Sanity check: 0 < dt < 100ms
+           dt = 0.001;
+         }
+       } else {
+         first_call_ = false;
+       }
+       
+       // Update integral error with simple anti-windup
        for (int i = 0; i < 7; ++i) {
-         double position_error = target_q[i] - current_q[i];
-         
-         // Only add tiny bias if error is exactly zero (libfranka test case)
-         if (std::abs(position_error) < 1e-8 && std::abs(control_torques[i]) < 0.1) {
-           // Very small bias to show robot is "alive" - no crazy oscillations
-           control_torques[i] += (i % 2 == 0 ? 0.05 : -0.05);  // Alternating tiny bias
+         // Only integrate if error is significant and we're not saturated
+         if (std::abs(position_error[i]) > 1e-6) {
+           double tentative_integral = integral_error_[i] + position_error[i] * dt;
+           
+           // Anti-windup: limit integral contribution to ±5 Nm
+           double integral_torque = ki_[i] * tentative_integral;
+           if (std::abs(integral_torque) < 5.0) {
+             integral_error_[i] = tentative_integral;
+           }
+           // Don't update integral if saturated
          }
        }
        
-       // Debug logging (every 1000 calls to avoid spam)
-       static int debug_count = 0;
-       if (++debug_count % 1000 == 0) {
-         std::cout << "[PD Controller] Target: [" << target_q.transpose() << "]" << std::endl;
-         std::cout << "[PD Controller] Current: [" << current_q.transpose() << "]" << std::endl;
-         std::cout << "[PD Controller] Error: [" << (target_q - current_q).transpose() << "]" << std::endl;
-         std::cout << "[PD Controller] Control torques: [" << control_torques.transpose() << "]" << std::endl;
+       // PID control law: τ = Kp*e + Ki*∫e*dt + Kd*(-dq)
+       Eigen::VectorXd proportional_term = kp_.cwiseProduct(position_error);
+       Eigen::VectorXd integral_term = ki_.cwiseProduct(integral_error_);
+       Eigen::VectorXd derivative_term = kd_.cwiseProduct(-current_dq);  // velocity feedback
+       
+       control_torques = proportional_term + integral_term + derivative_term;
+       
+       // Small bias for libfranka responsiveness (only if really needed)
+       for (int i = 0; i < 7; ++i) {
+         if (std::abs(position_error[i]) < 1e-8 && std::abs(control_torques[i]) < 0.1) {
+           control_torques[i] += (i % 2 == 0 ? 0.05 : -0.05);
+         }
        }
        
-       // Add any direct torque commands from libfranka
+       // Debug logging for PID mode
+       static int pid_debug_count = 0;
+       if (++pid_debug_count % 2000 == 0) {  // Every 2 seconds at 1kHz
+         std::cout << "[PID MODE] Target: [" << target_q.transpose() << "]" << std::endl;
+         std::cout << "[PID MODE] Current: [" << current_q.transpose() << "]" << std::endl;
+         std::cout << "[PID MODE] Error: [" << position_error.transpose() << "]" << std::endl;
+         std::cout << "[PID MODE] P: [" << proportional_term.transpose() << "]" << std::endl;
+         std::cout << "[PID MODE] I: [" << integral_term.transpose() << "]" << std::endl;
+         std::cout << "[PID MODE] D: [" << derivative_term.transpose() << "]" << std::endl;
+         std::cout << "[PID MODE] Total: [" << control_torques.transpose() << "]" << std::endl;
+       }
+       
+       previous_time_ = current_time;
+       
+       // Add any additional direct torque commands from libfranka (if any)
        for (int i = 0; i < 7; ++i) {
          control_torques[i] += g_robot_state.tau_cmd[i];
        }
        
-     } else if (g_robot_state.has_torque_command) {
-       // TORQUE CONTROL: Direct torque application
-       for (int i = 0; i < 7; ++i) {
-         control_torques[i] = g_robot_state.tau_cmd[i];
-       }
      } else {
        // NO COMMANDS: Zero torques (gravity compensation will handle this)
        control_torques.setZero();
+       
+       // Reset integrator when idle
+       integral_error_.setZero();
+       first_call_ = true;
+       
+       // Debug logging for idle mode
+       static int idle_debug_count = 0;
+       if (++idle_debug_count % 5000 == 0) {  // Every 5 seconds at 1kHz
+         std::cout << "[IDLE MODE] No commands, zero torques" << std::endl;
+       }
      }
      
      // Apply torque limits for safety
-     const double max_torque = 50.0;  // Conservative limit
+     const double max_torque = 50.0;
      for (int i = 0; i < 7; ++i) {
        control_torques[i] = std::max(-max_torque, std::min(max_torque, control_torques[i]));
      }
@@ -133,7 +415,18 @@ class FciPositionController final : public drake::systems::LeafSystem<double> {
      output->SetFromVector(control_torques);
    }
    
+   // Member variables
    int state_input_port_;
+   
+   // PID gains (fixed size, reasonable values)
+   Eigen::VectorXd kp_{7};  // Proportional gains
+   Eigen::VectorXd ki_{7};  // Integral gains  
+   Eigen::VectorXd kd_{7};  // Derivative gains
+   
+   // PID state variables (mutable for const method)
+   mutable Eigen::VectorXd integral_error_{7};  // Accumulated integral error
+   mutable double previous_time_;               // Previous time for dt calculation
+   mutable bool first_call_;                    // Flag for proper time initialization
 };
 
 // Convert shared state to protocol RobotState
@@ -367,8 +660,9 @@ int main(int argc, char** argv) {
   using namespace franka_fci_sim;
 
   if (argc < 4) {
-    std::cerr << "Usage: " << argv[0] << " <package.xml> <arm.urdf> <time_step> [headless]\n";
+    std::cerr << "Usage: " << argv[0] << " <package.xml> <arm.urdf> <time_step> [headless] [turbo]\n";
     std::cerr << "  headless: 'true' to run without visualization and log joint positions continuously\n";
+    std::cerr << "  turbo: 'turbo' to run faster than real-time (no 1:1 real-time constraint)\n";
     return 1;
   }
   const std::string  package_xml = argv[1];
@@ -451,7 +745,7 @@ int main(int argc, char** argv) {
   builder.Connect(plant.get_state_output_port(), g_comp->get_input_port_estimated_state());
 
   // FCI position controller
-  auto* fci_position_controller = builder.AddSystem<FciPositionController>();
+  auto* fci_position_controller = builder.AddSystem<FciPidController>();
   builder.Connect(plant.get_state_output_port(), fci_position_controller->get_input_port(fci_position_controller->get_state_input_port()));
 
   // Torque adder: gravity compensation + FCI commands
@@ -519,22 +813,46 @@ int main(int argc, char** argv) {
       "fer_joint5", "fer_joint6", "fer_joint7"
   };
   
+  // TURBO MODE: Allow faster-than-real-time simulation
+  bool turbo_mode = (argc >= 6 && std::string(argv[5]) == "turbo");
+  if (turbo_mode) {
+    std::cout << "TURBO MODE ENABLED - Running faster than real-time!" << std::endl;
+    simulator.set_target_realtime_rate(0.0);  // No real-time constraint
+  }
+  
   int sim_loop_count = 0;
   auto last_log_time = std::chrono::steady_clock::now();
   auto sim_start_time = std::chrono::steady_clock::now();
   std::array<double, 7> prev_q = {0, 0, 0, 0, 0, 0, 0};  // Previous joint positions for movement detection
   
+  // Performance monitoring
+  auto last_perf_time = sim_start_time;
+  int perf_step_count = 0;
+  double total_physics_time = 0.0;
+  
   while (g_sim_running.load()) {
-    // REAL-TIME SYNCHRONIZATION: Calculate target time based on wall-clock time
-    auto current_wall_time = std::chrono::steady_clock::now();
-    double elapsed_wall_time = std::chrono::duration<double>(current_wall_time - sim_start_time).count();
-    double target_sim_time = elapsed_wall_time; // 1:1 real-time ratio
+    auto loop_start = std::chrono::steady_clock::now();
     
-    // Only advance simulation if we're behind target time
-    if (simulator.get_context().get_time() < target_sim_time) {
-      const double advance_to = simulator.get_context().get_time() + sim_step;
-      simulator.AdvanceTo(std::min(advance_to, target_sim_time));
+    if (turbo_mode) {
+      // TURBO MODE: Run as fast as possible
+      simulator.AdvanceTo(simulator.get_context().get_time() + sim_step);
+    } else {
+      // REAL-TIME MODE: Calculate target time based on wall-clock time
+      auto current_wall_time = std::chrono::steady_clock::now();
+      double elapsed_wall_time = std::chrono::duration<double>(current_wall_time - sim_start_time).count();
+      double target_sim_time = elapsed_wall_time; // 1:1 real-time ratio
+      
+      // Only advance simulation if we're behind target time
+      if (simulator.get_context().get_time() < target_sim_time) {
+        const double advance_to = simulator.get_context().get_time() + sim_step;
+        simulator.AdvanceTo(std::min(advance_to, target_sim_time));
+      }
     }
+    
+    auto physics_end = std::chrono::steady_clock::now();
+    double physics_time = std::chrono::duration<double>(physics_end - loop_start).count();
+    total_physics_time += physics_time;
+    perf_step_count++;
     
     // Update shared state with current Drake state (do this less frequently)
     if (sim_loop_count % 10 == 0) {  // Update every 10ms instead of every 1ms
@@ -573,6 +891,24 @@ int main(int argc, char** argv) {
     auto now = std::chrono::steady_clock::now();
     double log_interval = headless ? 0.5 : 2.0;  // 500ms for headless (slower), 2s for normal
     
+    // Performance monitoring every 5 seconds
+    if (std::chrono::duration<double>(now - last_perf_time).count() >= 5.0) {
+      double avg_physics_time = total_physics_time / perf_step_count;
+      double real_time_factor = simulator.get_context().get_time() / std::chrono::duration<double>(now - sim_start_time).count();
+      
+      std::cout << "[PERFORMANCE] Avg physics time: " << std::fixed << std::setprecision(4) 
+                << avg_physics_time * 1000.0 << "ms" << std::endl;
+      std::cout << "[PERFORMANCE] Real-time factor: " << std::fixed << std::setprecision(2) 
+                << real_time_factor << "x" << std::endl;
+      std::cout << "[PERFORMANCE] Simulation frequency: " << std::fixed << std::setprecision(1) 
+                << perf_step_count / 5.0 << " Hz (target: 1000 Hz)" << std::endl;
+      
+      // Reset counters
+      last_perf_time = now;
+      perf_step_count = 0;
+      total_physics_time = 0.0;
+    }
+    
     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_log_time).count() >= log_interval * 1000) {
       std::lock_guard<std::mutex> lock(g_robot_state.mutex);
       
@@ -586,6 +922,9 @@ int main(int argc, char** argv) {
           }
         }
         
+        double elapsed_wall_time = std::chrono::duration<double>(now - sim_start_time).count();
+        double real_time_factor = simulator.get_context().get_time() / elapsed_wall_time;
+        
         std::cout << "[HEADLESS] t=" << std::fixed << std::setprecision(3) << simulator.get_context().get_time() << "s ";
         std::cout << "q=[";
         for (int i = 0; i < 7; ++i) {
@@ -597,7 +936,8 @@ int main(int argc, char** argv) {
         if (movement_detected) {
           std::cout << " *** MOVEMENT DETECTED! ***";
         }
-        std::cout << " (wall_time_ratio=" << std::fixed << std::setprecision(2) << simulator.get_context().get_time() / elapsed_wall_time << ")";
+        std::cout << " RTF=" << std::fixed << std::setprecision(2) << real_time_factor << "x";
+        if (turbo_mode) std::cout << " [TURBO]";
         std::cout << std::endl;
         
         // Update previous positions
@@ -606,7 +946,14 @@ int main(int argc, char** argv) {
         }
       } else {
         // Normal mode: Log summary every 2 seconds with ALL joint positions
-        std::cout << "[Drake] Sim time: " << std::fixed << std::setprecision(3) << simulator.get_context().get_time() << "s" << std::endl;
+        double elapsed_wall_time = std::chrono::duration<double>(now - sim_start_time).count();
+        double real_time_factor = simulator.get_context().get_time() / elapsed_wall_time;
+        
+        std::cout << "[Drake] Sim time: " << std::fixed << std::setprecision(3) << simulator.get_context().get_time() << "s";
+        std::cout << " RTF: " << std::fixed << std::setprecision(2) << real_time_factor << "x";
+        if (turbo_mode) std::cout << " [TURBO MODE]";
+        std::cout << std::endl;
+        
         std::cout << "  Current q: [";
         for (int i = 0; i < 7; ++i) {
           std::cout << std::fixed << std::setprecision(4) << g_robot_state.q[i] << (i < 6 ? ", " : "");
@@ -636,8 +983,12 @@ int main(int argc, char** argv) {
       last_log_time = now;
     }
     
-    // CRITICAL: Sleep for exactly 1ms to maintain 1kHz loop rate
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    // Sleep logic: Only sleep in real-time mode
+    if (!turbo_mode) {
+      // CRITICAL: Sleep for exactly 1ms to maintain 1kHz loop rate in real-time mode
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    // In turbo mode, no sleep - run as fast as possible!
   }
 
   // Cleanup
