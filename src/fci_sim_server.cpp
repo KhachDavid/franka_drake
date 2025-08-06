@@ -230,7 +230,7 @@ void FrankaFciSimServer::handle_connect_command(const protocol::CommandHeader& h
   if (state_provider_) {
     protocol::RobotState initial_state = state_provider_();
     initial_state.message_id = message_id_++;
-    initial_state.robot_mode = protocol::RobotMode::kIdle;
+    initial_state.robot_mode = protocol::RobotMode::kMove;  // CRITICAL: Must be kMove for libfranka!
     initial_state.motion_generator_mode = protocol::MotionGeneratorMode::kIdle;
     initial_state.controller_mode = protocol::ControllerMode::kOther;
     initial_state.control_command_success_rate = 1.0;
@@ -358,7 +358,21 @@ void FrankaFciSimServer::handle_connect_command(const protocol::CommandHeader& h
             response_state.message_id = command.message_id + 1;
             response_state.robot_mode = protocol::RobotMode::kMove;
             
-            response_state.controller_mode = protocol::ControllerMode::kExternalController;
+            // Use the requested controller mode, not hardcoded external controller
+            switch (requested_controller_mode_) {
+              case protocol::Move::ControllerMode::kJointImpedance:
+                response_state.controller_mode = protocol::ControllerMode::kJointImpedance;
+                break;
+              case protocol::Move::ControllerMode::kCartesianImpedance:
+                response_state.controller_mode = protocol::ControllerMode::kCartesianImpedance;
+                break;
+              case protocol::Move::ControllerMode::kExternalController:
+                response_state.controller_mode = protocol::ControllerMode::kExternalController;
+                break;
+              default:
+                response_state.controller_mode = protocol::ControllerMode::kExternalController;
+                break;
+            }
             
             // Convert from Move::MotionGeneratorMode to MotionGeneratorMode
             switch (requested_motion_generator_mode_) {
@@ -446,6 +460,18 @@ void FrankaFciSimServer::handle_tcp_commands() {
     switch (static_cast<protocol::Command>(cmd_header.command)) {
       case protocol::Command::kSetCollisionBehavior:
         handle_set_collision_behavior_command(cmd_header);
+        break;
+        
+      case protocol::Command::kSetJointImpedance:
+        handle_set_joint_impedance_command(cmd_header);
+        break;
+        
+      case protocol::Command::kSetCartesianImpedance:
+        handle_set_cartesian_impedance_command(cmd_header);
+        break;
+        
+      case protocol::Command::kAutomaticErrorRecovery:
+        handle_automatic_error_recovery_command(cmd_header);
         break;
         
       case protocol::Command::kMove:
@@ -587,6 +613,101 @@ void FrankaFciSimServer::handle_stop_move_command(const protocol::CommandHeader&
   }
 }
 
+void FrankaFciSimServer::handle_set_joint_impedance_command(const protocol::CommandHeader& header) {
+  log_message("[FCI Sim Server] Handling SetJointImpedance command");
+  
+  // Read payload (joint impedance parameters)
+  if (header.size > sizeof(header)) {
+    size_t payload_size = header.size - sizeof(header);
+    std::vector<uint8_t> payload(payload_size);
+    
+    if (!read_exact(tcp_client_fd_, payload.data(), payload_size)) {
+      log_message("[FCI Sim Server] Failed to read SetJointImpedance payload");
+      return;
+    }
+    
+    // We don't actually process the impedance parameters in simulation
+    log_message("[FCI Sim Server] SetJointImpedance parameters received (ignored in simulation)");
+  }
+  
+  // Send success response
+  protocol::CommandHeader response_header(
+    protocol::Command::kSetJointImpedance,
+    header.command_id,
+    sizeof(protocol::CommandHeader) + sizeof(protocol::SetJointImpedance::Response)
+  );
+  
+  protocol::SetJointImpedance::Response response(protocol::SetJointImpedance::Status::kSuccess);
+  
+  if (write_exact(tcp_client_fd_, &response_header, sizeof(response_header)) &&
+      write_exact(tcp_client_fd_, &response, sizeof(response))) {
+    log_message("[FCI Sim Server] Sent SetJointImpedance success response");
+  } else {
+    log_message("[FCI Sim Server] Failed to send SetJointImpedance response");
+  }
+}
+
+void FrankaFciSimServer::handle_set_cartesian_impedance_command(const protocol::CommandHeader& header) {
+  log_message("[FCI Sim Server] Handling SetCartesianImpedance command");
+  
+  // Read payload (cartesian impedance parameters)
+  if (header.size > sizeof(header)) {
+    size_t payload_size = header.size - sizeof(header);
+    std::vector<uint8_t> payload(payload_size);
+    
+    if (!read_exact(tcp_client_fd_, payload.data(), payload_size)) {
+      log_message("[FCI Sim Server] Failed to read SetCartesianImpedance payload");
+      return;
+    }
+    
+    // We don't actually process the impedance parameters in simulation
+    log_message("[FCI Sim Server] SetCartesianImpedance parameters received (ignored in simulation)");
+  }
+  
+  // Send success response
+  protocol::CommandHeader response_header(
+    protocol::Command::kSetCartesianImpedance,
+    header.command_id,
+    sizeof(protocol::CommandHeader) + sizeof(protocol::SetCartesianImpedance::Response)
+  );
+  
+  protocol::SetCartesianImpedance::Response response(protocol::SetCartesianImpedance::Status::kSuccess);
+  
+  if (write_exact(tcp_client_fd_, &response_header, sizeof(response_header)) &&
+      write_exact(tcp_client_fd_, &response, sizeof(response))) {
+    log_message("[FCI Sim Server] Sent SetCartesianImpedance success response");
+  } else {
+    log_message("[FCI Sim Server] Failed to send SetCartesianImpedance response");
+  }
+}
+
+void FrankaFciSimServer::handle_automatic_error_recovery_command(const protocol::CommandHeader& header) {
+  log_message("[FCI Sim Server] Handling AutomaticErrorRecovery command");
+  
+  // Read any payload
+  if (header.size > sizeof(header)) {
+    size_t payload_size = header.size - sizeof(header);
+    std::vector<uint8_t> payload(payload_size);
+    read_exact(tcp_client_fd_, payload.data(), payload_size);
+  }
+  
+  // Send success response
+  protocol::CommandHeader response_header(
+    protocol::Command::kAutomaticErrorRecovery,
+    header.command_id,
+    sizeof(protocol::CommandHeader) + sizeof(protocol::AutomaticErrorRecovery::Response)
+  );
+  
+  protocol::AutomaticErrorRecovery::Response response(protocol::AutomaticErrorRecovery::Status::kSuccess);
+  
+  if (write_exact(tcp_client_fd_, &response_header, sizeof(response_header)) &&
+      write_exact(tcp_client_fd_, &response, sizeof(response))) {
+    log_message("[FCI Sim Server] Sent AutomaticErrorRecovery success response");
+  } else {
+    log_message("[FCI Sim Server] Failed to send AutomaticErrorRecovery response");
+  }
+}
+
 void FrankaFciSimServer::handle_generic_command(const protocol::CommandHeader& header) {
   char msg[256];
   sprintf(msg, "[FCI Sim Server] Handling generic command %u (not implemented)", static_cast<uint32_t>(header.command));
@@ -723,8 +844,41 @@ void FrankaFciSimServer::udp_control_loop() {
         protocol::RobotState response_state = state_provider_();
         response_state.message_id = command.message_id + 1;
         response_state.robot_mode = protocol::RobotMode::kMove;
-        response_state.controller_mode = protocol::ControllerMode::kExternalController;
-        response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
+        
+        // Use the requested controller mode, not hardcoded external controller
+        switch (requested_controller_mode_) {
+          case protocol::Move::ControllerMode::kJointImpedance:
+            response_state.controller_mode = protocol::ControllerMode::kJointImpedance;
+            break;
+          case protocol::Move::ControllerMode::kCartesianImpedance:
+            response_state.controller_mode = protocol::ControllerMode::kCartesianImpedance;
+            break;
+          case protocol::Move::ControllerMode::kExternalController:
+            response_state.controller_mode = protocol::ControllerMode::kExternalController;
+            break;
+          default:
+            response_state.controller_mode = protocol::ControllerMode::kExternalController;
+            break;
+        }
+        
+        // Convert from Move::MotionGeneratorMode to MotionGeneratorMode
+        switch (requested_motion_generator_mode_) {
+          case protocol::Move::MotionGeneratorMode::kJointPosition:
+            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
+            break;
+          case protocol::Move::MotionGeneratorMode::kJointVelocity:
+            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointVelocity;
+            break;
+          case protocol::Move::MotionGeneratorMode::kCartesianPosition:
+            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianPosition;
+            break;
+          case protocol::Move::MotionGeneratorMode::kCartesianVelocity:
+            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianVelocity;
+            break;
+          default:
+            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
+            break;
+        }
         response_state.control_command_success_rate = 1.0;
         response_state.errors.fill(false);
         response_state.reflex_reason.fill(false);

@@ -42,6 +42,9 @@ class FrankaFciSimServer {
   void handle_connect_command(const protocol::CommandHeader& header);
   void handle_tcp_commands();
   void handle_set_collision_behavior_command(const protocol::CommandHeader& header);
+  void handle_set_joint_impedance_command(const protocol::CommandHeader& header);
+  void handle_set_cartesian_impedance_command(const protocol::CommandHeader& header);
+  void handle_automatic_error_recovery_command(const protocol::CommandHeader& header);
   void handle_move_command(const protocol::CommandHeader& header);
   void handle_stop_move_command(const protocol::CommandHeader& header);
   void handle_generic_command(const protocol::CommandHeader& header);

@@ -14,7 +14,10 @@
 #include <drake/systems/primitives/demultiplexer.h>
 #include <drake/systems/analysis/runge_kutta5_integrator.h>
 #include <drake/math/rigid_transform.h>
+#include <drake/math/rotation_matrix.h>
+#include <drake/multibody/math/spatial_algebra.h>
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <iostream>
 #include <thread>
 #include <atomic>
@@ -31,16 +34,30 @@ struct SharedRobotState {
   std::mutex mutex;
   std::array<double, 7> q{};      // Joint positions
   std::array<double, 7> dq{};     // Joint velocities  
+  std::array<double, 7> dq_filtered{};  // Filtered joint velocities
   std::array<double, 7> tau_J{};  // Joint torques
   std::array<double, 16> O_T_EE{}; // End-effector pose
   std::array<double, 7> tau_cmd{}; // Commanded torques from FCI
   std::array<double, 7> q_cmd{};   // Commanded positions from FCI  
+  std::array<double, 7> dq_cmd{}; // Commanded velocities from FCI
   std::array<double, 16> O_T_EE_cmd{}; // Commanded EE pose from FCI
+  std::array<double, 6> O_dP_EE_cmd{};  // Commanded EE velocity (twist) from FCI
+  std::array<double, 2> elbow{};  // Current elbow configuration [position, sign]
+  std::array<double, 2> elbow_cmd{};  // Commanded elbow configuration
+  std::array<double, 7> tau_ext_hat_filtered{};  // Filtered external torques
+  std::array<double, 6> O_F_ext_hat_K{};  // External wrench in base frame
+  std::array<double, 6> K_F_ext_hat_K{};  // External wrench in stiffness frame
   bool has_position_command = false;
+  bool has_velocity_command = false;
   bool has_torque_command = false;
   bool has_cartesian_command = false;
+  bool has_cartesian_velocity_command = false;
   // Track current controller mode for proper torque detection
   franka_fci_sim::protocol::Move::ControllerMode current_controller_mode = franka_fci_sim::protocol::Move::ControllerMode::kExternalController;
+  franka_fci_sim::protocol::Move::MotionGeneratorMode current_motion_mode = franka_fci_sim::protocol::Move::MotionGeneratorMode::kJointPosition;
+  
+  // Command timeout tracking
+  std::chrono::steady_clock::time_point last_command_time = std::chrono::steady_clock::now();
   
   // END EFFECTOR CONFIGURATION
   std::string ee_frame_name = "fer_link7";  // Default to fingerless
@@ -62,196 +79,166 @@ struct SharedRobotState {
 SharedRobotState g_robot_state;
 std::atomic<bool> g_sim_running{true};
 
-// Ziegler-Nichols Auto-Tuning Class
-class ZieglerNicholsAutoTuner {
- public:
-   struct TuningResult {
-     Eigen::VectorXd ultimate_gain;      // Ku values
-     Eigen::VectorXd oscillation_period; // Tu values
-     bool success;
-   };
-   
-   ZieglerNicholsAutoTuner() {
-     // Initialize tuning parameters
-     max_gain_test_ = 500.0;  // Maximum gain to test (safety limit)
-     min_oscillations_ = 3;   // Minimum oscillations to measure period
-     convergence_threshold_ = 0.02;  // 2% change to declare convergence
-   }
-   
-   // Auto-tune a single joint by finding ultimate gain and period
-   TuningResult AutoTuneJoint(int joint_index, 
-                             std::function<void(double)> set_gain_callback,
-                             std::function<double()> get_position_callback,
-                             std::function<double()> get_time_callback) {
-     TuningResult result;
-     result.ultimate_gain = Eigen::VectorXd::Zero(7);
-     result.oscillation_period = Eigen::VectorXd::Zero(7);
-     result.success = false;
-     
-     std::cout << "[ZN Tuning] Starting auto-tune for joint " << joint_index << std::endl;
-     
-     // Step 1: Find ultimate gain (Ku) by increasing gain until sustained oscillation
-     double ku = FindUltimateGain(joint_index, set_gain_callback, get_position_callback, get_time_callback);
-     if (ku <= 0) {
-       std::cout << "[ZN Tuning] Failed to find ultimate gain for joint " << joint_index << std::endl;
-       return result;
-     }
-     
-     // Step 2: Measure oscillation period (Tu) at ultimate gain
-     double tu = MeasureOscillationPeriod(joint_index, ku, set_gain_callback, get_position_callback, get_time_callback);
-     if (tu <= 0) {
-       std::cout << "[ZN Tuning] Failed to measure oscillation period for joint " << joint_index << std::endl;
-       return result;
-     }
-     
-     result.ultimate_gain[joint_index] = ku;
-     result.oscillation_period[joint_index] = tu;
-     result.success = true;
-     
-     std::cout << "[ZN Tuning] Joint " << joint_index << " tuning complete:" << std::endl;
-     std::cout << "  Ultimate Gain (Ku): " << ku << std::endl;
-     std::cout << "  Oscillation Period (Tu): " << tu << " seconds" << std::endl;
-     
-     return result;
-   }
-   
- private:
-   double FindUltimateGain(int joint_index,
-                          std::function<void(double)> set_gain_callback,
-                          std::function<double()> get_position_callback,
-                          std::function<double()> get_time_callback) {
-     
-     double gain = 10.0;  // Start with low gain
-     double gain_increment = 10.0;
-     
-     while (gain < max_gain_test_) {
-       set_gain_callback(gain);
-       
-       // Wait for settling
-       std::this_thread::sleep_for(std::chrono::seconds(1));
-       
-       // Apply small disturbance and measure response
-       bool oscillating = TestForOscillation(get_position_callback, get_time_callback);
-       
-       if (oscillating) {
-         std::cout << "[ZN Tuning] Found ultimate gain: " << gain << std::endl;
-         return gain;
-       }
-       
-       gain += gain_increment;
-       
-       // Adaptive increment (start small, increase if no oscillation)
-       if (gain > 100.0) gain_increment = 25.0;
-       if (gain > 200.0) gain_increment = 50.0;
-     }
-     
-     return -1.0;  // Failed to find ultimate gain
-   }
-   
-   double MeasureOscillationPeriod(int joint_index, double ultimate_gain,
-                                  std::function<void(double)> set_gain_callback,
-                                  std::function<double()> get_position_callback,
-                                  std::function<double()> get_time_callback) {
-     
-     set_gain_callback(ultimate_gain);
-     
-     // Wait for steady oscillation
-     std::this_thread::sleep_for(std::chrono::seconds(2));
-     
-     // Record position data for period measurement
-     std::vector<double> positions;
-     std::vector<double> times;
-     
-     double start_time = get_time_callback();
-     double measurement_duration = 5.0;  // Measure for 5 seconds
-     
-     while ((get_time_callback() - start_time) < measurement_duration) {
-       positions.push_back(get_position_callback());
-       times.push_back(get_time_callback());
-       std::this_thread::sleep_for(std::chrono::milliseconds(10));  // 100Hz sampling
-     }
-     
-     // Analyze oscillation period using zero-crossings
-     return CalculateOscillationPeriod(positions, times);
-   }
-   
-   bool TestForOscillation(std::function<double()> get_position_callback,
-                          std::function<double()> get_time_callback) {
-     
-     std::vector<double> positions;
-     double start_time = get_time_callback();
-     double test_duration = 3.0;  // Test for 3 seconds
-     
-     while ((get_time_callback() - start_time) < test_duration) {
-       positions.push_back(get_position_callback());
-       std::this_thread::sleep_for(std::chrono::milliseconds(50));  // 20Hz sampling
-     }
-     
-     // Check for sustained oscillation (simple variance check)
-     if (positions.size() < 10) return false;
-     
-     double mean_pos = 0.0;
-     for (double pos : positions) mean_pos += pos;
-     mean_pos /= positions.size();
-     
-     double variance = 0.0;
-     for (double pos : positions) {
-       variance += (pos - mean_pos) * (pos - mean_pos);
-     }
-     variance /= positions.size();
-     
-     // If variance is above threshold, consider it oscillating
-     double oscillation_threshold = 0.001;  // 1 mrad variance threshold
-     return variance > oscillation_threshold;
-   }
-   
-   double CalculateOscillationPeriod(const std::vector<double>& positions, 
-                                    const std::vector<double>& times) {
-     if (positions.size() < 20) return -1.0;
-     
-     // Find zero crossings (relative to mean position)
-     double mean_pos = 0.0;
-     for (double pos : positions) mean_pos += pos;
-     mean_pos /= positions.size();
-     
-     std::vector<double> zero_crossing_times;
-     for (size_t i = 1; i < positions.size(); ++i) {
-       double prev_diff = positions[i-1] - mean_pos;
-       double curr_diff = positions[i] - mean_pos;
-       
-       // Check for sign change (zero crossing)
-       if ((prev_diff > 0 && curr_diff < 0) || (prev_diff < 0 && curr_diff > 0)) {
-         // Linear interpolation to find exact crossing time
-         double t_cross = times[i-1] + (times[i] - times[i-1]) * 
-                         std::abs(prev_diff) / (std::abs(prev_diff) + std::abs(curr_diff));
-         zero_crossing_times.push_back(t_cross);
-       }
-     }
-     
-     if (zero_crossing_times.size() < 4) return -1.0;  // Need at least 2 complete cycles
-     
-     // Calculate average period (time between alternate zero crossings = full cycle)
-     double total_period = 0.0;
-     int period_count = 0;
-     
-     for (size_t i = 2; i < zero_crossing_times.size(); ++i) {
-       double period = zero_crossing_times[i] - zero_crossing_times[i-2];
-       total_period += period;
-       period_count++;
-     }
-     
-     if (period_count == 0) return -1.0;
-     
-     return total_period / period_count;
-   }
-   
-   double max_gain_test_;
-   int min_oscillations_;
-   double convergence_threshold_;
+// Simulation Runner class for cleaner, modular simulation loop
+class SimulationRunner {
+public:
+  SimulationRunner(drake::systems::Simulator<double>& sim, 
+                   const drake::multibody::MultibodyPlant<double>& plant,
+                   const drake::multibody::ModelInstanceIndex& robot,
+                   bool headless = false)
+      : simulator_(sim), plant_(plant), robot_(robot), headless_(headless) {
+    sim_start_time_ = std::chrono::steady_clock::now();
+    last_log_time_ = sim_start_time_;
+    
+    // Default to real-time simulation (RTF = 1.0)
+    simulator_.set_target_realtime_rate(1.0);
+  }
+  
+  void EnableTurboMode() {
+    turbo_mode_ = true;
+    simulator_.set_target_realtime_rate(0.0);  // No real-time constraint
+    std::cout << "TURBO MODE ENABLED - Running faster than real-time!" << std::endl;
+  }
+  
+  void RunStep() {
+    const double sim_step = 0.001;  // 1ms simulation step
+    
+    if (turbo_mode_) {
+      // TURBO MODE: Run as fast as possible
+      simulator_.AdvanceTo(simulator_.get_context().get_time() + sim_step);
+    } else {
+      // REAL-TIME MODE: Maintain RTF = 1.0
+      auto current_time = std::chrono::steady_clock::now();
+      double elapsed = std::chrono::duration<double>(current_time - sim_start_time_).count();
+      double target_sim_time = elapsed;
+      
+      if (simulator_.get_context().get_time() < target_sim_time) {
+        simulator_.AdvanceTo(std::min(simulator_.get_context().get_time() + sim_step, target_sim_time));
+      }
+    }
+    
+    // Update shared state periodically (every 10ms to reduce overhead)
+    if (++step_count_ % 10 == 0) {
+      UpdateSharedState();
+    }
+    
+    // Log periodically
+    auto now = std::chrono::steady_clock::now();
+    double log_interval = headless_ ? 0.5 : 2.0;  // 500ms for headless, 2s for visual
+    if (std::chrono::duration<double>(now - last_log_time_).count() >= log_interval) {
+      LogStatus();
+      last_log_time_ = now;
+    }
+  }
+  
+  bool ShouldContinue() const {
+    return g_sim_running.load();
+  }
+  
+private:
+  void UpdateSharedState() {
+    std::lock_guard<std::mutex> lock(g_robot_state.mutex);
+    auto& context = simulator_.get_context();
+    auto& plant_context = plant_.GetMyContextFromRoot(context);
+    
+    const std::vector<std::string> joint_names = {
+        "fer_joint1", "fer_joint2", "fer_joint3", "fer_joint4",
+        "fer_joint5", "fer_joint6", "fer_joint7"
+    };
+    
+    // Update arm joint states
+    for (int i = 0; i < 7; ++i) {
+      const auto& joint = plant_.GetJointByName<drake::multibody::RevoluteJoint>(joint_names[i], robot_);
+      g_robot_state.q[i] = joint.get_angle(plant_context);
+      
+      g_robot_state.dq[i] = joint.get_angular_rate(plant_context);
+      
+      // Apply simple first-order low-pass filter for velocity
+      const double alpha = 0.8;  // Filter coefficient (0 = no filtering, 1 = no update)
+      g_robot_state.dq_filtered[i] = alpha * g_robot_state.dq_filtered[i] + (1 - alpha) * g_robot_state.dq[i];
+      
+      g_robot_state.tau_J[i] = 0.1 * sin(g_robot_state.q[i]);  // Simple gravity estimate
+    }
+    
+    // Update gripper states if present
+    if (g_robot_state.has_gripper && g_robot_state.num_gripper_joints > 0) {
+      for (int i = 0; i < g_robot_state.num_gripper_joints; ++i) {
+        try {
+          const auto& joint = plant_.GetJointByName(g_robot_state.gripper_joint_names[i], robot_);
+          if (joint.num_positions() == 1) {
+            g_robot_state.gripper_q[i] = plant_.GetPositions(plant_context, robot_)[7 + i];
+            g_robot_state.gripper_dq[i] = plant_.GetVelocities(plant_context, robot_)[7 + i];
+          }
+        } catch (const std::exception&) {
+          // Keep previous values if read fails
+        }
+      }
+    }
+    
+    // Update end-effector pose
+    const auto& ee_frame = plant_.GetFrameByName(g_robot_state.ee_frame_name, robot_);
+    const auto& world_frame = plant_.world_frame();
+    const drake::math::RigidTransformd X_W_EE = plant_.CalcRelativeTransform(plant_context, world_frame, ee_frame);
+    const Eigen::Matrix4d T_matrix = X_W_EE.GetAsMatrix4();
+    
+    // Store as column-major array
+    for (int col = 0; col < 4; ++col) {
+      for (int row = 0; row < 4; ++row) {
+        g_robot_state.O_T_EE[col * 4 + row] = T_matrix(row, col);
+      }
+    }
+    
+    // Calculate elbow configuration
+    // The elbow position is defined as the angle of joint 3
+    // The elbow sign indicates whether the elbow is "up" (+1) or "down" (-1)
+    // This is a simplified calculation based on the joint configuration
+    g_robot_state.elbow[0] = g_robot_state.q[2];  // Joint 3 position
+    
+    // Determine elbow sign based on joint 4 position
+    // When joint 4 is negative (typical pose), elbow is considered "up" (+1)
+    // When joint 4 is positive, elbow is "down" (-1)
+    g_robot_state.elbow[1] = (g_robot_state.q[3] < 0) ? 1.0 : -1.0;
+  }
+  
+  void LogStatus() {
+    std::lock_guard<std::mutex> lock(g_robot_state.mutex);
+    
+    double sim_time = simulator_.get_context().get_time();
+    double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - sim_start_time_).count();
+    double rtf = sim_time / elapsed;
+    
+    if (headless_) {
+      // Compact headless logging
+      std::cout << "[HEADLESS] t=" << std::fixed << std::setprecision(3) << sim_time << "s ";
+      std::cout << "q=[";
+      for (int i = 0; i < 7; ++i) {
+        std::cout << std::fixed << std::setprecision(4) << g_robot_state.q[i];
+        if (i < 6) std::cout << ", ";
+      }
+      std::cout << "] RTF=" << std::fixed << std::setprecision(2) << rtf << "x";
+      if (turbo_mode_) std::cout << " [TURBO]";
+      std::cout << std::endl;
+    } else {
+      // Visual mode status
+      std::cout << "[Drake] Sim time: " << std::fixed << std::setprecision(3) << sim_time << "s";
+      std::cout << " RTF: " << std::fixed << std::setprecision(2) << rtf << "x";
+      if (turbo_mode_) std::cout << " [TURBO]";
+      std::cout << " | Commands: pos=" << g_robot_state.has_position_command 
+                << " tau=" << g_robot_state.has_torque_command;
+      std::cout << " | EE_z=" << std::fixed << std::setprecision(4) << g_robot_state.O_T_EE[14];
+      std::cout << std::endl;
+    }
+  }
+  
+  drake::systems::Simulator<double>& simulator_;
+  const drake::multibody::MultibodyPlant<double>& plant_;
+  const drake::multibody::ModelInstanceIndex& robot_;
+  bool headless_;
+  bool turbo_mode_ = false;
+  int step_count_ = 0;
+  std::chrono::steady_clock::time_point sim_start_time_;
+  std::chrono::steady_clock::time_point last_log_time_;
 };
-
-// Global auto-tuner instance
-ZieglerNicholsAutoTuner g_zn_tuner;
 
 // DETECT END EFFECTOR CONFIGURATION
 std::pair<int, int> DetectEndEffectorConfiguration(const drake::multibody::MultibodyPlant<double>& plant, 
@@ -346,29 +333,22 @@ std::pair<int, int> DetectEndEffectorConfiguration(const drake::multibody::Multi
   return {num_arm_joints, num_total_joints};
 }
 
-// Drake system to provide FCI commands as input - SIMPLE WORKING PID CONTROLLER
-class FciPidController final : public drake::systems::LeafSystem<double> {
+// Drake system to provide FCI commands as input - SIMPLE IMPEDANCE CONTROLLER
+class FciImpedanceController final : public drake::systems::LeafSystem<double> {
  public:
-  FciPidController() {
+  FciImpedanceController(const drake::multibody::MultibodyPlant<double>* plant,
+                        const drake::multibody::ModelInstanceIndex& robot_instance)
+      : plant_(plant), robot_instance_(robot_instance) {
     // We'll declare ports after we know the robot configuration
     // This will be updated after robot detection
     expected_num_arm_joints_ = 7;  // Default to arm joints only
     expected_num_total_joints_ = 7;
     
-    // Initialize PID gains with REASONABLE values
-    // Start with the working PD gains and add modest integral terms
-    kp_ << 150, 150, 120, 120, 80, 60, 40;   // Working proportional gains
-    ki_ << 0, 0, 0, 0, 0, 0, 0;       // Modest integral gains  
-    kd_ << 0, 0, 0, 0, 0, 0, 0;          // Working derivative gains
+    // Initialize integral errors
+    integral_errors_.setZero(7);
+    velocity_integral_errors_.setZero(7);
     
-    // Initialize state variables
-    integral_error_.setZero();
-    first_call_ = true;
-    
-    std::cout << "[PID Controller] Initialized with gains:" << std::endl;
-    std::cout << "  Kp: [" << kp_.transpose() << "]" << std::endl;
-    std::cout << "  Ki: [" << ki_.transpose() << "]" << std::endl;
-    std::cout << "  Kd: [" << kd_.transpose() << "]" << std::endl;
+    std::cout << "[Impedance Controller] Initialized" << std::endl;
   }
   
   // Configure the controller for the detected robot configuration
@@ -382,25 +362,19 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
     
     // Declare output port for computed control torques (only for arm joints)
     this->DeclareVectorOutputPort("control_torques", drake::systems::BasicVector<double>(num_arm_joints),
-                                 &FciPidController::CalcControlTorques);
+                                 &FciImpedanceController::CalcControlTorques);
     
-    std::cout << "[PID Controller] Configured for " << num_total_joints 
+    // Create a context for the plant that we'll update each time
+    plant_context_ = plant_->CreateDefaultContext();
+    
+    std::cout << "[Impedance Controller] Configured for " << num_total_joints 
               << " total joints (" << num_arm_joints << " arm joints)" << std::endl;
   }
 
    // Public accessor for state input port
    int get_state_input_port() const { return state_input_port_; }
    
-   // Manual gain setting interface
-   void SetPidGains(const Eigen::VectorXd& kp, const Eigen::VectorXd& ki, const Eigen::VectorXd& kd) {
-     kp_ = kp;
-     ki_ = ki;
-     kd_ = kd;
-     std::cout << "[PID Controller] Updated gains:" << std::endl;
-     std::cout << "  Kp: [" << kp_.transpose() << "]" << std::endl;
-     std::cout << "  Ki: [" << ki_.transpose() << "]" << std::endl;
-     std::cout << "  Kd: [" << kd_.transpose() << "]" << std::endl;
-   }
+
 
  private:
    void CalcControlTorques(const drake::systems::Context<double>& context,
@@ -416,124 +390,254 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
          control_torques[i] = g_robot_state.tau_cmd[i];
        }
        
-       // Reset integrator when in torque control mode
-       integral_error_.setZero();
-       first_call_ = true;
-       
-       // Debug logging for torque mode
-       static int torque_debug_count = 0;
-       if (++torque_debug_count % 2000 == 0) {  // Every 2 seconds at 1kHz
-         std::cout << "[TORQUE MODE] Direct torques: [" << control_torques.transpose() << "]" << std::endl;
-       }
+       // Reset integral errors when in torque mode
+       integral_errors_.setZero();
+       velocity_integral_errors_.setZero();
        
        // Apply torque limits for safety and output immediately
-       const double max_torque = 50.0;
-       for (int i = 0; i < expected_num_arm_joints_; ++i) { // Use expected_num_arm_joints_
-         control_torques[i] = std::max(-max_torque, std::min(max_torque, control_torques[i]));
+       const double torque_limits[7] = {87.0, 87.0, 87.0, 87.0, 50.0, 50.0, 40.0};
+       for (int i = 0; i < expected_num_arm_joints_; ++i) {
+         control_torques[i] = std::max(-torque_limits[i], std::min(torque_limits[i], control_torques[i]));
        }
        
        output->SetFromVector(control_torques);
        return;  // EARLY RETURN - No PID calculations in torque mode!
      }
      
-     // Only run PID if we're NOT in torque mode
-     if (g_robot_state.has_position_command) {
-       // Get current robot state from input for PID calculations
+     // Check if commands have timed out (no new commands for 100ms)
+     auto now = std::chrono::steady_clock::now();
+     double time_since_last_cmd = std::chrono::duration<double>(now - g_robot_state.last_command_time).count();
+     bool commands_active = time_since_last_cmd < 0.1; // 100ms timeout
+     
+     // VELOCITY CONTROL: PD control on velocity
+     if (g_robot_state.has_velocity_command && commands_active) {
+       // Get current robot state from input
        const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
+       Eigen::VectorXd current_q = state_input.head(expected_num_total_joints_);
+       Eigen::VectorXd current_dq = state_input.tail(expected_num_total_joints_);
        
-       // Extract current positions and velocities
-       Eigen::VectorXd current_q = state_input.head(expected_num_total_joints_); // Use expected_num_total_joints_
-       Eigen::VectorXd current_dq = state_input.tail(expected_num_total_joints_); // Use expected_num_total_joints_
-       
-       // POSITION CONTROL: Use PID controller to track commanded positions
-       Eigen::VectorXd target_q(expected_num_arm_joints_); // Use expected_num_arm_joints_
+       // Target velocities from FCI commands
+       Eigen::VectorXd target_dq(expected_num_arm_joints_);
        for (int i = 0; i < expected_num_arm_joints_; ++i) {
-         target_q[i] = g_robot_state.q_cmd[i];
+         target_dq[i] = g_robot_state.dq_cmd[i];
        }
        
-       // Calculate position error (only for arm joints)
-       Eigen::VectorXd position_error = target_q - current_q.head(expected_num_arm_joints_);
+       // Velocity control gains
+       const double velocity_p_gains[7] = {50, 50, 50, 50, 30, 25, 20};  // N⋅m⋅s/rad
+       const double velocity_i_gains[7] = {10, 10, 10, 10, 5, 5, 5};    // N⋅m⋅s²/rad
        
-       // Handle first call - initialize previous time properly
-       double current_time = context.get_time();
-       double dt = 0.001;  // Default 1ms timestep
-       
-       if (!first_call_) {
-         dt = current_time - previous_time_;
-         if (dt <= 0.0 || dt > 0.1) {  // Sanity check: 0 < dt < 100ms
-           dt = 0.001;
-         }
-       } else {
-         first_call_ = false;
+       // Calculate control torques: τ = Kp*(dq_d - dq) + Ki*∫(dq_d - dq)dt
+       for (int i = 0; i < expected_num_arm_joints_; ++i) {
+         double velocity_error = target_dq[i] - current_dq[i];
+         
+         // Update integral error with anti-windup
+         velocity_integral_errors_[i] += velocity_error * 0.001; // dt = 0.001s
+         const double max_integral = 0.5; // Limit integral contribution
+         velocity_integral_errors_[i] = std::max(-max_integral, std::min(max_integral, velocity_integral_errors_[i]));
+         
+         control_torques[i] = velocity_p_gains[i] * velocity_error + 
+                              velocity_i_gains[i] * velocity_integral_errors_[i];
        }
        
-       // Update integral error with simple anti-windup
-       for (int i = 0; i < expected_num_arm_joints_; ++i) {
-         // Only integrate if error is significant and we're not saturated
-         if (std::abs(position_error[i]) > 1e-6) {
-           double tentative_integral = integral_error_[i] + position_error[i] * dt;
-           
-           // Anti-windup: limit integral contribution to ±5 Nm
-           double integral_torque = ki_[i] * tentative_integral;
-           if (std::abs(integral_torque) < 5.0) {
-             integral_error_[i] = tentative_integral;
+       // Debug output
+       static int vel_ctrl_count = 0;
+       if (++vel_ctrl_count <= 10 || vel_ctrl_count % 1000 == 0) {
+         std::cout << "[Velocity Control] Iteration " << vel_ctrl_count << ":" << std::endl;
+         std::cout << "  Target dq[6]: " << std::fixed << std::setprecision(4) << target_dq[6] << " rad/s" << std::endl;
+         std::cout << "  Current dq[6]: " << std::fixed << std::setprecision(4) << current_dq[6] << " rad/s" << std::endl;
+         std::cout << "  Error[6]: " << std::fixed << std::setprecision(4) << (target_dq[6] - current_dq[6]) << " rad/s" << std::endl;
+         std::cout << "  Torque[6]: " << std::fixed << std::setprecision(4) << control_torques[6] << " Nm" << std::endl;
+       }
+     }
+     // CARTESIAN CONTROL: Control in task space (position or velocity)
+     else if ((g_robot_state.has_cartesian_command || g_robot_state.has_cartesian_velocity_command) && commands_active) {
+       // Get current robot state from input
+       const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
+       Eigen::VectorXd current_q = state_input.head(expected_num_total_joints_);
+       Eigen::VectorXd current_dq = state_input.tail(expected_num_total_joints_);
+       
+       // Update plant context with current state
+       plant_->SetPositions(plant_context_.get(), robot_instance_, current_q.head(expected_num_arm_joints_));
+       plant_->SetVelocities(plant_context_.get(), robot_instance_, current_dq.head(expected_num_arm_joints_));
+       
+       // Get current end-effector pose
+       const auto& ee_frame = plant_->GetFrameByName(g_robot_state.ee_frame_name, robot_instance_);
+       const auto& world_frame = plant_->world_frame();
+       const drake::math::RigidTransformd X_W_EE = plant_->CalcRelativeTransform(*plant_context_, world_frame, ee_frame);
+       
+       // Get Jacobian for the end-effector
+       Eigen::MatrixXd J_ee(6, expected_num_arm_joints_);
+       plant_->CalcJacobianSpatialVelocity(*plant_context_, drake::multibody::JacobianWrtVariable::kQDot,
+                                           ee_frame, Eigen::Vector3d::Zero(), world_frame, world_frame, &J_ee);
+       
+       Eigen::VectorXd task_space_error(6);
+       
+       if (g_robot_state.has_cartesian_command) {
+         // CARTESIAN POSITION CONTROL
+         // Convert commanded pose from array to transformation matrix
+         Eigen::Matrix4d T_cmd;
+         for (int i = 0; i < 4; ++i) {
+           for (int j = 0; j < 4; ++j) {
+             T_cmd(j, i) = g_robot_state.O_T_EE_cmd[i * 4 + j];  // Column-major
            }
-           // Don't update integral if saturated
+         }
+         drake::math::RigidTransformd X_W_EE_cmd(T_cmd);
+         
+         // Compute position error
+         Eigen::Vector3d position_error = X_W_EE_cmd.translation() - X_W_EE.translation();
+         
+         // Compute orientation error using angle-axis
+         drake::math::RotationMatrixd R_error = X_W_EE_cmd.rotation() * X_W_EE.rotation().inverse();
+         Eigen::AngleAxisd angle_axis(R_error.matrix());
+         Eigen::Vector3d orientation_error = angle_axis.angle() * angle_axis.axis();
+         
+         // Combine errors
+         task_space_error.head<3>() = position_error;
+         task_space_error.tail<3>() = orientation_error;
+         
+         // Cartesian impedance gains
+         const double cart_stiffness_trans = 100.0;  // N/m
+         const double cart_stiffness_rot = 30.0;     // Nm/rad
+         const double cart_damping_trans = 20.0;     // N⋅s/m
+         const double cart_damping_rot = 10.0;       // Nm⋅s/rad
+         
+         // Task space force/torque
+         Eigen::VectorXd F_task(6);
+         F_task.head<3>() = cart_stiffness_trans * position_error;
+         F_task.tail<3>() = cart_stiffness_rot * orientation_error;
+         
+         // Add damping in task space
+         Eigen::VectorXd v_ee = J_ee * current_dq.head(expected_num_arm_joints_);
+         F_task.head<3>() -= cart_damping_trans * v_ee.head<3>();
+         F_task.tail<3>() -= cart_damping_rot * v_ee.tail<3>();
+         
+         // Convert to joint torques using Jacobian transpose
+         control_torques = J_ee.transpose() * F_task;
+         
+         // Debug output
+         static int cart_pos_ctrl_count = 0;
+         if (++cart_pos_ctrl_count <= 10 || cart_pos_ctrl_count % 1000 == 0) {
+           std::cout << "[Cartesian Position Control] Iteration " << cart_pos_ctrl_count << ":" << std::endl;
+           std::cout << "  Position error: [" << position_error.transpose() << "] m" << std::endl;
+           std::cout << "  Orientation error: [" << orientation_error.transpose() << "] rad" << std::endl;
+           std::cout << "  Task force norm: " << F_task.head<3>().norm() << " N" << std::endl;
+         }
+       } else if (g_robot_state.has_cartesian_velocity_command) {
+         // CARTESIAN VELOCITY CONTROL
+         // Target velocity (twist) from FCI commands
+         Eigen::VectorXd target_twist(6);
+         for (int i = 0; i < 6; ++i) {
+           target_twist[i] = g_robot_state.O_dP_EE_cmd[i];
+         }
+         
+         // Current end-effector velocity
+         Eigen::VectorXd current_twist = J_ee * current_dq.head(expected_num_arm_joints_);
+         
+         // Velocity error
+         Eigen::VectorXd velocity_error = target_twist - current_twist;
+         
+         // Cartesian velocity gains
+         const double cart_vel_p_trans = 50.0;  // N⋅s/m
+         const double cart_vel_p_rot = 15.0;    // Nm⋅s/rad
+         
+         // Task space force/torque
+         Eigen::VectorXd F_task(6);
+         F_task.head<3>() = cart_vel_p_trans * velocity_error.head<3>();
+         F_task.tail<3>() = cart_vel_p_rot * velocity_error.tail<3>();
+         
+         // Convert to joint torques
+         control_torques = J_ee.transpose() * F_task;
+         
+         // Debug output
+         static int cart_vel_ctrl_count = 0;
+         if (++cart_vel_ctrl_count <= 10 || cart_vel_ctrl_count % 1000 == 0) {
+           std::cout << "[Cartesian Velocity Control] Iteration " << cart_vel_ctrl_count << ":" << std::endl;
+           std::cout << "  Target twist: [" << target_twist.transpose() << "]" << std::endl;
+           std::cout << "  Velocity error norm: " << velocity_error.norm() << std::endl;
          }
        }
-       
-       // PID control law: τ = Kp*e + Ki*∫e*dt + Kd*(-dq)
-       Eigen::VectorXd proportional_term = kp_.cwiseProduct(position_error);
-       Eigen::VectorXd integral_term = ki_.cwiseProduct(integral_error_);
-       Eigen::VectorXd derivative_term = kd_.cwiseProduct(-current_dq.head(expected_num_arm_joints_));  // velocity feedback for arm joints only
-       
-       control_torques = proportional_term + integral_term + derivative_term;
-       
-       // Small bias for libfranka responsiveness (only if really needed)
-       for (int i = 0; i < expected_num_arm_joints_; ++i) {
-         if (std::abs(position_error[i]) < 1e-8 && std::abs(control_torques[i]) < 0.1) {
-           control_torques[i] += (i % 2 == 0 ? 0.05 : -0.05);
-         }
-       }
-       
-       // Debug logging for PID mode
-       static int pid_debug_count = 0;
-       if (++pid_debug_count % 2000 == 0) {  // Every 2 seconds at 1kHz
-         std::cout << "[PID MODE] Target: [" << target_q.transpose() << "]" << std::endl;
-         std::cout << "[PID MODE] Current: [" << current_q.head(expected_num_arm_joints_).transpose() << "]" << std::endl;
-         std::cout << "[PID MODE] Error: [" << position_error.transpose() << "]" << std::endl;
-         std::cout << "[PID MODE] P: [" << proportional_term.transpose() << "]" << std::endl;
-         std::cout << "[PID MODE] I: [" << integral_term.transpose() << "]" << std::endl;
-         std::cout << "[PID MODE] D: [" << derivative_term.transpose() << "]" << std::endl;
-         std::cout << "[PID MODE] Total: [" << control_torques.transpose() << "]" << std::endl;
-       }
-       
-       previous_time_ = current_time;
-       
-       // Add any additional direct torque commands from libfranka (if any)
-       for (int i = 0; i < expected_num_arm_joints_; ++i) {
-         control_torques[i] += g_robot_state.tau_cmd[i];
-       }
+     }
+     // POSITION CONTROL: PID control on position  
+     else if (g_robot_state.has_position_command && commands_active) {
+       // POSITION CONTROL: Simple joint impedance control
+       // Get current robot state from input
+       const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
+       Eigen::VectorXd current_q = state_input.head(expected_num_total_joints_);
+       Eigen::VectorXd current_dq = state_input.tail(expected_num_total_joints_);
+      
+      // Target positions from FCI commands
+      Eigen::VectorXd target_q(expected_num_arm_joints_);
+      for (int i = 0; i < expected_num_arm_joints_; ++i) {
+        target_q[i] = g_robot_state.q_cmd[i];
+      }
+      
+      // Optimized impedance values for accurate smooth motion
+      // Higher stiffness for better tracking, with matched damping for stability
+      const double stiffness[7] = {150, 150, 150, 150, 80, 60, 50};  // N⋅m/rad
+      const double damping[7] = {40, 40, 40, 40, 25, 20, 16};  // N⋅m⋅s/rad - slightly underdamped for responsiveness
+      
+      // Integral gains to eliminate steady-state error
+      const double integral_gains[7] = {5.0, 5.0, 5.0, 5.0, 3.0, 2.0, 1.5};  // N⋅m⋅s/rad
+      
+      // Calculate control torques: τ = K*(q_d - q) + Ki*∫(q_d - q)dt - D*dq
+      for (int i = 0; i < expected_num_arm_joints_; ++i) {
+        double position_error = target_q[i] - current_q[i];
+        
+        // Update integral error with anti-windup
+        integral_errors_[i] += position_error * 0.001; // dt = 0.001s
+        const double max_integral = 0.1; // Limit integral contribution
+        integral_errors_[i] = std::max(-max_integral, std::min(max_integral, integral_errors_[i]));
+        
+        // Limit velocity to reasonable values (safety check)
+        double limited_velocity = current_dq[i];
+        const double max_velocity = 2.0; // rad/s
+        if (std::abs(limited_velocity) > max_velocity) {
+          limited_velocity = (limited_velocity > 0) ? max_velocity : -max_velocity;
+        }
+        
+        control_torques[i] = stiffness[i] * position_error + 
+                            integral_gains[i] * integral_errors_[i] - 
+                            damping[i] * limited_velocity;
+      }
+      
+      // Debug output
+      static int pos_ctrl_count = 0;
+      if (++pos_ctrl_count <= 10 || pos_ctrl_count % 1000 == 0) {
+        std::cout << "[Position Control] Iteration " << pos_ctrl_count << ":" << std::endl;
+        std::cout << "  Target q[6]: " << std::fixed << std::setprecision(4) << target_q[6] << std::endl;
+        std::cout << "  Current q[6]: " << std::fixed << std::setprecision(4) << current_q[6] << std::endl;
+        std::cout << "  Error[6]: " << std::fixed << std::setprecision(4) << (target_q[6] - current_q[6]) << std::endl;
+        std::cout << "  Velocity[6]: " << std::fixed << std::setprecision(4) << current_dq[6] << " rad/s" << std::endl;
+        std::cout << "  Torque[6]: " << std::fixed << std::setprecision(4) << control_torques[6] << " Nm" << std::endl;
+      }
        
      } else {
-       // NO COMMANDS: Zero torques (gravity compensation will handle this)
+       // NO COMMANDS OR TIMED OUT: Zero torques (gravity compensation will handle this)
        control_torques.setZero();
        
-       // Reset integrator when idle
-       integral_error_.setZero();
-       first_call_ = true;
+       // Reset integral errors when idle
+       integral_errors_.setZero();
+       velocity_integral_errors_.setZero();
        
-       // Debug logging for idle mode
-       static int idle_debug_count = 0;
-       if (++idle_debug_count % 5000 == 0) {  // Every 5 seconds at 1kHz
-         std::cout << "[IDLE MODE] No commands, zero torques" << std::endl;
+       // Log when commands stop
+       static bool was_active = false;
+       if (!commands_active && was_active) {
+         std::cout << "[Controller] Commands stopped - holding position with gravity compensation only" << std::endl;
        }
+       was_active = commands_active;
      }
      
      // Apply torque limits for safety
-     const double max_torque = 50.0;
+     // Reasonable limits that allow proper motion
+     const double torque_limits[7] = {87.0, 87.0, 87.0, 87.0, 50.0, 50.0, 40.0};
      for (int i = 0; i < expected_num_arm_joints_; ++i) {
-       control_torques[i] = std::max(-max_torque, std::min(max_torque, control_torques[i]));
+       control_torques[i] = std::max(-torque_limits[i], std::min(torque_limits[i], control_torques[i]));
+     }
+     
+     // Log limited torque for debugging (check if we were in position control)
+     static int debug_count = 0;
+     if (g_robot_state.has_position_command && (++debug_count <= 10 || debug_count % 1000 == 0)) {
+       std::cout << "  Limited torque[6]: " << std::fixed << std::setprecision(4) << control_torques[6] << " Nm" << std::endl;
      }
      
      output->SetFromVector(control_torques);
@@ -546,15 +650,14 @@ class FciPidController final : public drake::systems::LeafSystem<double> {
    int expected_num_arm_joints_;    // Number of arm joints (usually 7)
    int expected_num_total_joints_;  // Total joints including gripper
    
-   // PID gains (fixed size, reasonable values)
-   Eigen::VectorXd kp_{7};  // Proportional gains
-   Eigen::VectorXd ki_{7};  // Integral gains  
-   Eigen::VectorXd kd_{7};  // Derivative gains
+   // Controller state
+   mutable Eigen::VectorXd integral_errors_;  // Integral of position errors
+   mutable Eigen::VectorXd velocity_integral_errors_;  // Integral of velocity errors
    
-   // PID state variables (mutable for const method)
-   mutable Eigen::VectorXd integral_error_{7};  // Accumulated integral error
-   mutable double previous_time_;               // Previous time for dt calculation
-   mutable bool first_call_;                    // Flag for proper time initialization
+   // Drake plant reference for kinematics calculations
+   const drake::multibody::MultibodyPlant<double>* plant_;
+   const drake::multibody::ModelInstanceIndex robot_instance_;
+   mutable std::unique_ptr<drake::systems::Context<double>> plant_context_;
 };
 
 // Convert shared state to protocol RobotState
@@ -565,7 +668,7 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   
   // Basic joint state
   state.q = g_robot_state.q;
-  state.dq = g_robot_state.dq;
+  state.dq = g_robot_state.dq_filtered;  // Use filtered velocities for better stability
   state.tau_J = g_robot_state.tau_J;
   
   // End-effector poses
@@ -573,9 +676,13 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   state.O_T_EE_d = g_robot_state.O_T_EE;  // Use current as desired for now
   state.O_T_EE_c = g_robot_state.O_T_EE_cmd;
   
-  // Joint commands
-  state.q_d = g_robot_state.q;     // Use current as desired
-  state.dq_d.fill(0.0);            // Zero velocity command
+  // Joint commands - IMPORTANT: q_d should reflect commanded positions if available
+  if (g_robot_state.has_position_command) {
+    state.q_d = g_robot_state.q_cmd;  // Use commanded positions
+  } else {
+    state.q_d = g_robot_state.q;      // Use current as desired
+  }
+  state.dq_d.fill(0.0);               // Zero velocity command
   state.tau_J_d = g_robot_state.tau_cmd;
   
   // Set default values for other fields
@@ -617,11 +724,12 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   
   state.F_x_Cload.fill(0.0); // No load
   
-  state.elbow.fill(0.0);
-  state.elbow_d.fill(0.0);
-  state.elbow_c.fill(0.0);
-  state.delbow_c.fill(0.0);
-  state.ddelbow_c.fill(0.0);
+  // Elbow configuration
+  state.elbow = g_robot_state.elbow;
+  state.elbow_d = g_robot_state.elbow;  // Desired = current for now
+  state.elbow_c = g_robot_state.elbow_cmd;
+  state.delbow_c.fill(0.0);  // Zero velocity for now
+  state.ddelbow_c.fill(0.0); // Zero acceleration for now
   
   state.ddq_d.fill(0.0);
   state.dtau_J.fill(0.0);
@@ -629,9 +737,11 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   state.cartesian_contact.fill(0.0);
   state.joint_collision.fill(0.0);
   state.cartesian_collision.fill(0.0);
-  state.tau_ext_hat_filtered.fill(0.0);
-  state.O_F_ext_hat_K.fill(0.0);
-  state.K_F_ext_hat_K.fill(0.0);
+  
+  // External forces (simulated as zero for now - could be enhanced with contact detection)
+  state.tau_ext_hat_filtered = g_robot_state.tau_ext_hat_filtered;
+  state.O_F_ext_hat_K = g_robot_state.O_F_ext_hat_K;
+  state.K_F_ext_hat_K = g_robot_state.K_F_ext_hat_K;
   state.O_dP_EE_d.fill(0.0);
   state.O_ddP_O.fill(0.0);
   state.O_dP_EE_c.fill(0.0);
@@ -646,139 +756,170 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   // Must be > 0.9 for libfranka to consider the robot ready
   state.control_command_success_rate = 1.0;
   
+  // Debug output for first few states
+  static int state_count = 0;
+  if (++state_count <= 5) {
+    std::cout << "[DEBUG] Robot state #" << state_count << ":" << std::endl;
+    std::cout << "  q: [";
+    for (int i = 0; i < 7; ++i) {
+      std::cout << std::fixed << std::setprecision(4) << state.q[i] << (i < 6 ? ", " : "");
+    }
+    std::cout << "]" << std::endl;
+    std::cout << "  dq: [";
+    for (int i = 0; i < 7; ++i) {
+      std::cout << std::fixed << std::setprecision(4) << state.dq[i] << (i < 6 ? ", " : "");
+    }
+    std::cout << "]" << std::endl;
+    std::cout << "  robot_mode: " << static_cast<int>(state.robot_mode) << std::endl;
+    std::cout << "  control_command_success_rate: " << state.control_command_success_rate << std::endl;
+  }
+  
   return state;
 }
 
 // Handle incoming FCI commands
 void handle_robot_command(const franka_fci_sim::protocol::RobotCommand& cmd) {
-  // DEBUG: Add logging to verify this function is called
-  std::cout << "[DEBUG] handle_robot_command called with msg_id=" << cmd.message_id << std::endl;
-  
   std::lock_guard<std::mutex> lock(g_robot_state.mutex);
   
   // Store all commands
   g_robot_state.tau_cmd = cmd.control.tau_J_d;
   g_robot_state.q_cmd = cmd.motion.q_c;
+  g_robot_state.dq_cmd = cmd.motion.dq_c;
   g_robot_state.O_T_EE_cmd = cmd.motion.O_T_EE_c;
+  g_robot_state.O_dP_EE_cmd = cmd.motion.O_dP_EE_c;
+  g_robot_state.elbow_cmd = cmd.motion.elbow_c;
   
-  // Check for meaningful commands (not just zero/default values)
+  // Reset command timeout on each new command
+  g_robot_state.last_command_time = std::chrono::steady_clock::now();
+  
+  // Check for meaningful commands
   bool has_position_cmd = false;
+  bool has_velocity_cmd = false;
   bool has_cartesian_cmd = false; 
+  bool has_cartesian_velocity_cmd = false;
   bool has_torque_cmd = false;
   
-  // libfranka expects the robot to respond to position commands immediately, even if they match current position
-  if (g_robot_state.current_controller_mode == franka_fci_sim::protocol::Move::ControllerMode::kJointImpedance) {
-    // In joint impedance mode, ANY non-zero position command is valid
-    for (int i = 0; i < 7; ++i) {
-      if (std::abs(cmd.motion.q_c[i]) > 1e-6) {
-        has_position_cmd = true;
-        break;
-      }
+  // Check position commands
+  // IMPORTANT: libfranka sends position commands continuously, even if they match current position
+  // We need to detect if we're receiving valid position commands, not just if they differ from current
+  
+  // First check if we have a valid position command (non-zero positions in expected range)
+  bool has_valid_positions = false;
+  for (int i = 0; i < 7; ++i) {
+    // Joint positions are typically in range [-2.9, 2.9] radians for Franka
+    if (std::abs(cmd.motion.q_c[i]) > 0.001 || cmd.motion.q_c[i] != 0.0) {
+      has_valid_positions = true;
+      break;
     }
-  } else {
-    // For other modes, compare with current position
-    for (int i = 0; i < 7; ++i) {
-      double current_pos = g_robot_state.q[i];
-      double commanded_pos = cmd.motion.q_c[i];
-      if (std::abs(commanded_pos - current_pos) > 0.01) {  // 0.01 radians = ~0.57 degrees threshold
-        has_position_cmd = true;
-        break;
-      }
+  }
+  
+  // Position control is active if:
+  // 1. We're in joint impedance mode AND joint position motion generator OR
+  // 2. We have valid position commands AND joint position motion generator
+  if ((g_robot_state.current_controller_mode == franka_fci_sim::protocol::Move::ControllerMode::kJointImpedance ||
+       has_valid_positions) && 
+      g_robot_state.current_motion_mode == franka_fci_sim::protocol::Move::MotionGeneratorMode::kJointPosition) {
+    has_position_cmd = true;
+  }
+  
+  // Check velocity commands
+  bool has_valid_velocities = false;
+  for (int i = 0; i < 7; ++i) {
+    if (std::abs(cmd.motion.dq_c[i]) > 1e-6) {
+      has_valid_velocities = true;
+      break;
     }
-    
-    // If no significant difference detected, but we have any non-zero commanded positions, still treat as position command
-    if (!has_position_cmd) {
-      for (int i = 0; i < 7; ++i) {
-        if (std::abs(cmd.motion.q_c[i]) > 1e-6) {
-          has_position_cmd = true;
-          break;
-        }
-      }
-    }
+  }
+  
+  // Velocity control is active if using joint velocity motion generator
+  if (has_valid_velocities && 
+      g_robot_state.current_motion_mode == franka_fci_sim::protocol::Move::MotionGeneratorMode::kJointVelocity) {
+    has_velocity_cmd = true;
   }
   
   // Check cartesian commands
+  bool has_valid_cartesian = false;
+  // Check if the transformation matrix is not identity (has meaningful pose)
   for (int i = 0; i < 16; ++i) {
-    if (std::abs(cmd.motion.O_T_EE_c[i]) > 1e-6) {
-      has_cartesian_cmd = true;
+    double expected = (i % 5 == 0) ? 1.0 : 0.0; // Diagonal elements should be 1, others 0 for identity
+    if (std::abs(cmd.motion.O_T_EE_c[i] - expected) > 1e-6) {
+      has_valid_cartesian = true;
       break;
     }
   }
   
-  // This handles cases where torques start at zero and ramp up (like move_joint7_torque)
+  if (has_valid_cartesian && 
+      g_robot_state.current_motion_mode == franka_fci_sim::protocol::Move::MotionGeneratorMode::kCartesianPosition) {
+    has_cartesian_cmd = true;
+  }
+  
+  // Check cartesian velocity commands
+  bool has_valid_cartesian_vel = false;
+  for (int i = 0; i < 6; ++i) {
+    if (std::abs(cmd.motion.O_dP_EE_c[i]) > 1e-6) {
+      has_valid_cartesian_vel = true;
+      break;
+    }
+  }
+  
+  if (has_valid_cartesian_vel && 
+      g_robot_state.current_motion_mode == franka_fci_sim::protocol::Move::MotionGeneratorMode::kCartesianVelocity) {
+    has_cartesian_velocity_cmd = true;
+  }
+  
+  // Check torque commands
   has_torque_cmd = (g_robot_state.current_controller_mode == franka_fci_sim::protocol::Move::ControllerMode::kExternalController);
-  
-  // Also check if any torques are explicitly non-zero (for immediate torque commands)
-  for (int i = 0; i < 7; ++i) {
-    if (std::abs(cmd.control.tau_J_d[i]) > 1e-6) {
-      has_torque_cmd = true;
-      break;
+  if (!has_torque_cmd) {
+    for (int i = 0; i < 7; ++i) {
+      if (std::abs(cmd.control.tau_J_d[i]) > 1e-6) {
+        has_torque_cmd = true;
+        break;
+      }
     }
   }
   
-  // Update command flags for controller
+  // Update command flags
   g_robot_state.has_position_command = has_position_cmd;
+  g_robot_state.has_velocity_command = has_velocity_cmd;
   g_robot_state.has_cartesian_command = has_cartesian_cmd;
+  g_robot_state.has_cartesian_velocity_command = has_cartesian_velocity_cmd;
   g_robot_state.has_torque_command = has_torque_cmd;
   
-  // Enhanced logging every 100 commands
+  // Enhanced logging for debugging position control
   static int cmd_count = 0;
-  if (++cmd_count % 100 == 0) {
-    std::cout << "[FCI] Command #" << cmd_count << " - ";
-    if (has_position_cmd) {
-      std::cout << "JOINT_POS q_c=[" << std::fixed << std::setprecision(3) 
-                << cmd.motion.q_c[0] << "," << cmd.motion.q_c[1] << "," << cmd.motion.q_c[2] << ",...] ";
-    }
-    if (has_cartesian_cmd) {
-      std::cout << "CARTESIAN pos=[" << std::fixed << std::setprecision(3)
-                << cmd.motion.O_T_EE_c[12] << "," << cmd.motion.O_T_EE_c[13] << "," << cmd.motion.O_T_EE_c[14] << "] ";
-    }
-    if (has_torque_cmd) {
-      std::cout << "TORQUE tau=[" << std::fixed << std::setprecision(3)
-                << cmd.control.tau_J_d[0] << "," << cmd.control.tau_J_d[1] << "," << cmd.control.tau_J_d[2] << "," 
-                << cmd.control.tau_J_d[3] << "," << cmd.control.tau_J_d[4] << "," << cmd.control.tau_J_d[5] << "," 
-                << cmd.control.tau_J_d[6] << "]";
-    }
-    if (!has_position_cmd && !has_cartesian_cmd && !has_torque_cmd) {
-      std::cout << "NO_COMMANDS (all zeros)";
-    }
-    std::cout << std::endl;
-  }
+  cmd_count++;
   
-  // Log first few commands in detail
-  if (cmd_count <= 200) {  // Increased from 50 to 200 to see more of the trajectory
-    std::cout << "[FCI] *** DETAILED COMMAND #" << cmd_count << " ***" << std::endl;
-    std::cout << "  Joint positions: [" << std::fixed << std::setprecision(4);
+  // Log first 50 commands in detail to debug position control
+  if (cmd_count <= 50) {
+    std::cout << "[FCI] Command #" << cmd_count << " details:" << std::endl;
+    std::cout << "  Controller mode: " << static_cast<int>(g_robot_state.current_controller_mode) 
+              << " (0=JointImp, 1=CartImp, 2=ExtCtrl)" << std::endl;
+    std::cout << "  q_c: [";
     for (int i = 0; i < 7; ++i) {
-      std::cout << cmd.motion.q_c[i] << (i < 6 ? ", " : "");
+      std::cout << std::fixed << std::setprecision(4) << cmd.motion.q_c[i] << (i < 6 ? ", " : "");
     }
     std::cout << "]" << std::endl;
-    std::cout << "  Torques: [";
+    std::cout << "  tau_J_d: [";
     for (int i = 0; i < 7; ++i) {
       std::cout << std::fixed << std::setprecision(4) << cmd.control.tau_J_d[i] << (i < 6 ? ", " : "");
     }
     std::cout << "]" << std::endl;
-    std::cout << "  Controller Mode: " << static_cast<int>(g_robot_state.current_controller_mode) << std::endl;
-    std::cout << "  Flags: pos=" << has_position_cmd << " cart=" << has_cartesian_cmd << " tau=" << has_torque_cmd << std::endl;
-    
-    // SPECIAL ALERT: Check for non-zero torques
-    bool has_nonzero_torque = false;
-    double max_torque = 0.0;
-    int max_torque_joint = -1;
-    for (int i = 0; i < 7; ++i) {
-      if (std::abs(cmd.control.tau_J_d[i]) > 1e-6) {
-        has_nonzero_torque = true;
-        if (std::abs(cmd.control.tau_J_d[i]) > std::abs(max_torque)) {
-          max_torque = cmd.control.tau_J_d[i];
-          max_torque_joint = i;
-        }
-      }
-    }
-    
-    if (has_nonzero_torque) {
-      std::cout << "  🔥 NON-ZERO TORQUE DETECTED! Max: " << std::fixed << std::setprecision(6) 
-                << max_torque << " Nm on joint " << (max_torque_joint + 1) << " 🔥" << std::endl;
-    }
+    std::cout << "  elbow_c: [" << std::fixed << std::setprecision(4) 
+              << cmd.motion.elbow_c[0] << ", " << cmd.motion.elbow_c[1] << "]" << std::endl;
+    std::cout << "  Flags: pos=" << has_position_cmd << " vel=" << has_velocity_cmd
+              << " cart=" << has_cartesian_cmd << " cart_vel=" << has_cartesian_velocity_cmd
+              << " tau=" << has_torque_cmd << " valid_pos=" << has_valid_positions << std::endl;
+  }
+  
+  // Regular logging every 1000 commands
+  if (cmd_count % 1000 == 0) {
+    std::cout << "[FCI] Command #" << cmd_count << " - ";
+    if (has_position_cmd) std::cout << "POS ";
+    if (has_cartesian_cmd) std::cout << "CART ";
+    if (has_torque_cmd) std::cout << "TAU ";
+    if (!has_position_cmd && !has_cartesian_cmd && !has_torque_cmd) std::cout << "IDLE";
+    std::cout << " | q_cmd[6]=" << std::fixed << std::setprecision(4) << cmd.motion.q_c[6];
+    std::cout << std::endl;
   }
 }
 
@@ -875,10 +1016,10 @@ int main(int argc, char** argv) {
       &plant, InverseDynamics<double>::InverseDynamicsMode::kGravityCompensation);
   builder.Connect(plant.get_state_output_port(), g_comp->get_input_port_estimated_state());
 
-  // FCI position controller
-  auto* fci_position_controller = builder.AddSystem<FciPidController>();
-  fci_position_controller->ConfigureForRobot(num_arm_joints, num_total_joints);
-  builder.Connect(plant.get_state_output_port(), fci_position_controller->get_input_port(fci_position_controller->get_state_input_port()));
+  // FCI impedance controller
+  auto* fci_controller = builder.AddSystem<FciImpedanceController>(&plant, robot);
+  fci_controller->ConfigureForRobot(num_arm_joints, num_total_joints);
+  builder.Connect(plant.get_state_output_port(), fci_controller->get_input_port(fci_controller->get_state_input_port()));
 
   // Handle gravity compensation based on robot configuration
   drake::systems::Adder<double>* adder = nullptr;
@@ -892,7 +1033,7 @@ int main(int argc, char** argv) {
     // Torque adder: gravity compensation (arm joints only) + FCI commands
     adder = builder.AddSystem<drake::systems::Adder<double>>(2, num_arm_joints);
     builder.Connect(gravity_selector->get_output_port(0), adder->get_input_port(0));  // Use selected gravity torques
-    builder.Connect(fci_position_controller->get_output_port(), adder->get_input_port(1));
+    builder.Connect(fci_controller->get_output_port(), adder->get_input_port(1));
     
     // Connect arm torques to the plant
     builder.Connect(adder->get_output_port(), plant.get_actuation_input_port());
@@ -900,7 +1041,7 @@ int main(int argc, char** argv) {
     // Fingerless robot: use gravity compensation directly
     adder = builder.AddSystem<drake::systems::Adder<double>>(2, num_arm_joints);
     builder.Connect(g_comp->get_output_port(), adder->get_input_port(0));  // Direct gravity torques
-    builder.Connect(fci_position_controller->get_output_port(), adder->get_input_port(1));
+    builder.Connect(fci_controller->get_output_port(), adder->get_input_port(1));
     
     // Connect arm torques to the plant
     builder.Connect(adder->get_output_port(), plant.get_actuation_input_port());
@@ -942,8 +1083,11 @@ int main(int argc, char** argv) {
                                     franka_fci_sim::protocol::Move::MotionGeneratorMode motion_mode) {
     std::lock_guard<std::mutex> lock(g_robot_state.mutex);
     g_robot_state.current_controller_mode = controller_mode;
+    g_robot_state.current_motion_mode = motion_mode;
     std::cout << "[FCI] Controller mode changed to: " << static_cast<int>(controller_mode) 
               << " (0=JointImpedance, 1=CartesianImpedance, 2=ExternalController)" << std::endl;
+    std::cout << "[FCI] Motion generator mode changed to: " << static_cast<int>(motion_mode)
+              << " (0=JointPos, 1=JointVel, 2=CartPos, 3=CartVel)" << std::endl;
   });
   
   std::thread fci_thread([&server]() {
@@ -958,232 +1102,23 @@ int main(int argc, char** argv) {
   }
   std::cout << "Press Ctrl+C to stop." << std::endl;
   
-  // Run Drake simulation on main thread (for Meshcat compatibility)
-  const double sim_step = 0.001; // 1ms steps
-  const std::vector<std::string> joint_names = {
-      "fer_joint1", "fer_joint2", "fer_joint3", "fer_joint4",
-      "fer_joint5", "fer_joint6", "fer_joint7"
-  };
+  // Create simulation runner
+  SimulationRunner sim_runner(simulator, plant, robot, headless);
   
-  // TURBO MODE: Allow faster-than-real-time simulation
+  // Enable turbo mode if requested
   bool turbo_mode = (argc >= 6 && std::string(argv[5]) == "turbo");
   if (turbo_mode) {
-    std::cout << "TURBO MODE ENABLED - Running faster than real-time!" << std::endl;
-    simulator.set_target_realtime_rate(0.0);  // No real-time constraint
+    sim_runner.EnableTurboMode();
   }
   
-  int sim_loop_count = 0;
-  auto last_log_time = std::chrono::steady_clock::now();
-  auto sim_start_time = std::chrono::steady_clock::now();
-  std::array<double, 7> prev_q = {0, 0, 0, 0, 0, 0, 0};  // Previous joint positions for movement detection
-  
-  // Performance monitoring
-  auto last_perf_time = sim_start_time;
-  int perf_step_count = 0;
-  double total_physics_time = 0.0;
-  
-  while (g_sim_running.load()) {
-    auto loop_start = std::chrono::steady_clock::now();
+  // Main simulation loop - CLEAN AND SIMPLE!
+  while (sim_runner.ShouldContinue()) {
+    sim_runner.RunStep();
     
-    if (turbo_mode) {
-      // TURBO MODE: Run as fast as possible
-      simulator.AdvanceTo(simulator.get_context().get_time() + sim_step);
-    } else {
-      // REAL-TIME MODE: Calculate target time based on wall-clock time
-      auto current_wall_time = std::chrono::steady_clock::now();
-      double elapsed_wall_time = std::chrono::duration<double>(current_wall_time - sim_start_time).count();
-      double target_sim_time = elapsed_wall_time; // 1:1 real-time ratio
-      
-      // Only advance simulation if we're behind target time
-      if (simulator.get_context().get_time() < target_sim_time) {
-        const double advance_to = simulator.get_context().get_time() + sim_step;
-        simulator.AdvanceTo(std::min(advance_to, target_sim_time));
-      }
-    }
-    
-    auto physics_end = std::chrono::steady_clock::now();
-    double physics_time = std::chrono::duration<double>(physics_end - loop_start).count();
-    total_physics_time += physics_time;
-    perf_step_count++;
-    
-    // Update shared state with current Drake state (do this less frequently)
-    if (sim_loop_count % 10 == 0) {  // Update every 10ms instead of every 1ms
-      std::lock_guard<std::mutex> lock(g_robot_state.mutex);
-      auto& context = simulator.get_context();
-      auto& plant_context = plant.GetMyContextFromRoot(context);
-      
-      // Extract joint positions and velocities
-      for (int i = 0; i < 7; ++i) {
-        const auto& joint = plant.GetJointByName<drake::multibody::RevoluteJoint>(joint_names[i], robot);
-        g_robot_state.q[i] = joint.get_angle(plant_context);
-        g_robot_state.dq[i] = joint.get_angular_rate(plant_context);
-        
-        // For now, use simple gravity compensation torque estimate
-        // This gives libfranka realistic torque values to validate
-        double gravity_torque = 0.1 * sin(g_robot_state.q[i]); // Simple gravity model
-        g_robot_state.tau_J[i] = gravity_torque;
-      }
-      
-      // Extract gripper joint states (if present)
-      if (g_robot_state.has_gripper && g_robot_state.num_gripper_joints > 0) {
-        for (int i = 0; i < g_robot_state.num_gripper_joints; ++i) {
-          try {
-            // Use more general joint access that works with any joint type
-            const auto& joint = plant.GetJointByName(g_robot_state.gripper_joint_names[i], robot);
-            
-            // Check if it's a prismatic joint and get the position
-            if (joint.num_positions() == 1) {
-              g_robot_state.gripper_q[i] = plant.GetPositions(plant_context, robot)[7 + i];  // Assuming gripper joints come after arm joints
-              g_robot_state.gripper_dq[i] = plant.GetVelocities(plant_context, robot)[7 + i];
-            }
-          } catch (const std::exception& e) {
-            // If reading fails, keep previous values
-            // This can happen if joint type is wrong or joint doesn't exist
-            static int gripper_error_count = 0;
-            if (++gripper_error_count % 1000 == 0) {  // Log occasionally
-              std::cout << "[GRIPPER WARNING] Failed to read joint " << g_robot_state.gripper_joint_names[i] 
-                        << ": " << e.what() << std::endl;
-            }
-          }
-        }
-      }
-      
-      // Get end-effector pose
-      const auto& ee_frame = plant.GetFrameByName(g_robot_state.ee_frame_name, robot);
-      const auto& world_frame = plant.world_frame();
-      const drake::math::RigidTransformd X_W_EE = plant.CalcRelativeTransform(plant_context, world_frame, ee_frame);
-      const Eigen::Matrix4d T_matrix = X_W_EE.GetAsMatrix4();
-      
-      // Store as column-major array (Drake/libfranka convention)
-      for (int col = 0; col < 4; ++col) {
-        for (int row = 0; row < 4; ++row) {
-          g_robot_state.O_T_EE[col * 4 + row] = T_matrix(row, col);
-        }
-      }
-    }
-    
-    // Logging logic - different frequencies for headless vs normal mode
-    sim_loop_count++;
-    auto now = std::chrono::steady_clock::now();
-    double log_interval = headless ? 0.5 : 2.0;  // 500ms for headless (slower), 2s for normal
-    
-    // Performance monitoring every 5 seconds
-    if (std::chrono::duration<double>(now - last_perf_time).count() >= 5.0) {
-      double avg_physics_time = total_physics_time / perf_step_count;
-      double real_time_factor = simulator.get_context().get_time() / std::chrono::duration<double>(now - sim_start_time).count();
-      
-      std::cout << "[PERFORMANCE] Avg physics time: " << std::fixed << std::setprecision(4) 
-                << avg_physics_time * 1000.0 << "ms" << std::endl;
-      std::cout << "[PERFORMANCE] Real-time factor: " << std::fixed << std::setprecision(2) 
-                << real_time_factor << "x" << std::endl;
-      std::cout << "[PERFORMANCE] Simulation frequency: " << std::fixed << std::setprecision(1) 
-                << perf_step_count / 5.0 << " Hz (target: 1000 Hz)" << std::endl;
-      
-      // Reset counters
-      last_perf_time = now;
-      perf_step_count = 0;
-      total_physics_time = 0.0;
-    }
-    
-    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_log_time).count() >= log_interval * 1000) {
-      std::lock_guard<std::mutex> lock(g_robot_state.mutex);
-      
-      if (headless) {
-        // Headless mode: Log all joint positions and detect movement
-        bool movement_detected = false;
-        for (int i = 0; i < 7; ++i) {
-          if (std::abs(g_robot_state.q[i] - prev_q[i]) > 1e-6) {
-            movement_detected = true;
-            break;
-          }
-        }
-        
-        double elapsed_wall_time = std::chrono::duration<double>(now - sim_start_time).count();
-        double real_time_factor = simulator.get_context().get_time() / elapsed_wall_time;
-        
-        std::cout << "[HEADLESS] t=" << std::fixed << std::setprecision(3) << simulator.get_context().get_time() << "s ";
-        std::cout << "q=[";
-        for (int i = 0; i < 7; ++i) {
-          std::cout << std::fixed << std::setprecision(4) << g_robot_state.q[i];
-          if (i < 6) std::cout << ", ";
-        }
-        std::cout << "] ";
-        std::cout << "cmds=[" << g_robot_state.has_position_command << g_robot_state.has_cartesian_command << g_robot_state.has_torque_command << "]";
-        if (g_robot_state.has_gripper && g_robot_state.num_gripper_joints > 0) {
-          std::cout << " gripper=[";
-          for (int i = 0; i < g_robot_state.num_gripper_joints; ++i) {
-            std::cout << std::fixed << std::setprecision(4) << g_robot_state.gripper_q[i];
-            if (i < g_robot_state.num_gripper_joints - 1) std::cout << ", ";
-          }
-          std::cout << "]";
-        }
-        if (movement_detected) {
-          std::cout << " *** MOVEMENT DETECTED! ***";
-        }
-        std::cout << " RTF=" << std::fixed << std::setprecision(2) << real_time_factor << "x";
-        if (turbo_mode) std::cout << " [TURBO]";
-        std::cout << std::endl;
-        
-        // Update previous positions
-        for (int i = 0; i < 7; ++i) {
-          prev_q[i] = g_robot_state.q[i];
-        }
-      } else {
-        // Normal mode: Log summary every 2 seconds with ALL joint positions
-        double elapsed_wall_time = std::chrono::duration<double>(now - sim_start_time).count();
-        double real_time_factor = simulator.get_context().get_time() / elapsed_wall_time;
-        
-        std::cout << "[Drake] Sim time: " << std::fixed << std::setprecision(3) << simulator.get_context().get_time() << "s";
-        std::cout << " RTF: " << std::fixed << std::setprecision(2) << real_time_factor << "x";
-        if (turbo_mode) std::cout << " [TURBO MODE]";
-        std::cout << std::endl;
-        
-        std::cout << "  Current q: [";
-        for (int i = 0; i < 7; ++i) {
-          std::cout << std::fixed << std::setprecision(4) << g_robot_state.q[i] << (i < 6 ? ", " : "");
-        }
-        std::cout << "]" << std::endl;
-        
-        if (g_robot_state.has_position_command) {
-          std::cout << "  Target  q: [";
-          for (int i = 0; i < 7; ++i) {
-            std::cout << std::fixed << std::setprecision(4) << g_robot_state.q_cmd[i] << (i < 6 ? ", " : "");
-          }
-          std::cout << "]" << std::endl;
-          
-          std::cout << "  Error   q: [";
-          for (int i = 0; i < 7; ++i) {
-            double error = g_robot_state.q_cmd[i] - g_robot_state.q[i];
-            std::cout << std::fixed << std::setprecision(4) << error << (i < 6 ? ", " : "");
-          }
-          std::cout << "]" << std::endl;
-        }
-        
-        std::cout << "  Commands: pos=" << g_robot_state.has_position_command 
-                  << " cart=" << g_robot_state.has_cartesian_command 
-                  << " tau=" << g_robot_state.has_torque_command 
-                  << ", EE_z=" << std::fixed << std::setprecision(4) << g_robot_state.O_T_EE[14];
-        
-        if (g_robot_state.has_gripper && g_robot_state.num_gripper_joints > 0) {
-          std::cout << ", Gripper: [";
-          for (int i = 0; i < g_robot_state.num_gripper_joints; ++i) {
-            std::cout << std::fixed << std::setprecision(4) << g_robot_state.gripper_q[i];
-            if (i < g_robot_state.num_gripper_joints - 1) std::cout << ", ";
-          }
-          std::cout << "]";
-        }
-        
-        std::cout << std::endl;
-      }
-      last_log_time = now;
-    }
-    
-    // Sleep logic: Only sleep in real-time mode
+    // Sleep only in real-time mode to maintain 1kHz rate
     if (!turbo_mode) {
-      // CRITICAL: Sleep for exactly 1ms to maintain 1kHz loop rate in real-time mode
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      std::this_thread::sleep_for(std::chrono::microseconds(100));  // Small sleep to prevent CPU spinning
     }
-    // In turbo mode, no sleep - run as fast as possible!
   }
 
   // Cleanup
