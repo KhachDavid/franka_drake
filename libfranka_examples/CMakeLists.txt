@@ -26,6 +26,11 @@ add_franka_example(generate_elbow_motion_simple)
 add_franka_example(move_all_joints)
 add_franka_example(move_joint7_position)
 add_franka_example(move_joint7_position_wait)
+add_franka_example(trajectory_following)
+add_franka_example(cartesian_trajectory_following)
+add_franka_example(spline_trajectory)
+add_franka_example(simple_joint_motion_test)
+add_franka_example(force_control_simple)
 
 # Install targets
 install(TARGETS 
@@ -37,5 +42,9 @@ install(TARGETS
   move_all_joints
   move_joint7_position
   move_joint7_position_wait
+  trajectory_following
+  cartesian_trajectory_following
+  spline_trajectory
+  simple_joint_motion_test
   DESTINATION bin
 )
