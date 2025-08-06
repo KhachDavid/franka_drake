@@ -50,20 +50,16 @@ if [ ! -f "build/bin/franka-fci-sim-server" ]; then
 
     # Create build directory if it doesn't exist
     mkdir -p build
-    cd build
-
-    # Configure with CMake
-    echo "Configuring with CMake..."
-    cmake ..
-
-    # Build
-    echo "Building..."
-    make -j$(nproc)
-
-    echo "Build complete!"
-    echo "Executable location: build/bin/franka-fci-sim-server"
-    cd ..
 fi
+
+# Build
+cd build
+cmake ..
+echo "Building..."
+make -j$(nproc)
+echo "Build complete!"
+echo "Executable location: build/bin/franka-fci-sim-server"
+cd ..
 
 # Interactive configuration selection
 if [ "$CONFIG" = "auto" ]; then
