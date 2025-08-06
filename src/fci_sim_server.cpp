@@ -199,226 +199,47 @@ void FrankaFciSimServer::handle_connect_command(const protocol::CommandHeader& h
   }
   
   // Send properly formatted Connect::Response with header
+  // Build Connect::Response with padding matching libfranka spec (status + version + 4x padding)
+  struct __attribute__((packed)) ConnectResponsePacked {
+    uint16_t status;   // Connect::Status
+    uint16_t version;  // Library version
+    uint32_t padding;  // 4 bytes zero
+  };
+
+  ConnectResponsePacked connect_resp_raw{};
+  connect_resp_raw.status  = static_cast<uint16_t>(protocol::Connect::Status::kSuccess);
+  connect_resp_raw.version = protocol::kVersion;
+  connect_resp_raw.padding = 0u;
+
+  constexpr size_t kConnectRespSize = sizeof(ConnectResponsePacked); // 8 bytes
+
   protocol::CommandHeader response_header(
-    protocol::Command::kConnect, 
-    header.command_id, 
-    sizeof(protocol::CommandHeader) + sizeof(protocol::Connect::Response)
-  );
-  
-  protocol::Connect::Response connect_resp(protocol::Connect::Status::kSuccess);
-  
-  // Send header first
+      protocol::Command::kConnect,
+      header.command_id,
+      static_cast<uint32_t>(sizeof(protocol::CommandHeader) + kConnectRespSize));
+
+  // Send header
   if (!write_exact(tcp_client_fd_, &response_header, sizeof(response_header))) {
     log_message("[FCI Sim Server] Failed to send Connect response header");
     return;
   }
-  
-  // Send response payload
-  if (!write_exact(tcp_client_fd_, &connect_resp, sizeof(connect_resp))) {
-    log_message("[FCI Sim Server] Failed to send Connect::Response");
+  // Send payload
+  if (!write_exact(tcp_client_fd_, &connect_resp_raw, kConnectRespSize)) {
+    log_message("[FCI Sim Server] Failed to send Connect::Response payload");
     return;
   }
-  log_message("[FCI Sim Server] Sent Connect::Response with proper header");
+  log_message("[FCI Sim Server] Sent Connect::Response (status + version + padding) with correct size");
 
-  // CRITICAL: Send initial robot state via UDP IMMEDIATELY after Connect response
-  // libfranka calls udpBlockingReceive right after Connect handshake!
-  log_message("[FCI Sim Server] Sending initial robot state via UDP...");
+  // Start UDP state transmission immediately after Connect
   udp_client_ready_ = true;
   message_id_ = 1;
   
-  // Send initial state immediately
-  if (state_provider_) {
-    protocol::RobotState initial_state = state_provider_();
-    initial_state.message_id = message_id_++;
-    initial_state.robot_mode = protocol::RobotMode::kMove;  // CRITICAL: Must be kMove for libfranka!
-    initial_state.motion_generator_mode = protocol::MotionGeneratorMode::kIdle;
-    initial_state.controller_mode = protocol::ControllerMode::kOther;
-    initial_state.control_command_success_rate = 1.0;
-    initial_state.errors.fill(false);
-    initial_state.reflex_reason.fill(false);
-    
-    ssize_t sent = sendto(udp_socket_fd_, &initial_state, sizeof(initial_state), 0,
-                         (struct sockaddr*)&udp_client_addr_, sizeof(udp_client_addr_));
-    
-    char msg[256];
-    sprintf(msg, "[FCI Sim Server] Sent initial UDP state: %ld bytes, msg_id=%lu", 
-            sent, initial_state.message_id);
-    log_message(msg);
-  }
-  
-  // Start continuous UDP state transmission for robot.read() support
-  // This allows echo_robot_state and similar read-only clients to work
-  log_message("[FCI Sim Server] Starting continuous UDP state transmission for robot.read() support");
-  std::thread udp_state_thread([this]() {
-    int loop_count = 0;
-    auto last_state_time = std::chrono::steady_clock::now();
-    
-    while (running_ && udp_client_ready_) {
-      auto current_time = std::chrono::steady_clock::now();
-      
-      // Send robot state at ~1kHz
-      if (std::chrono::duration_cast<std::chrono::microseconds>(current_time - last_state_time).count() >= 1000) {
-        if (state_provider_) {
-          protocol::RobotState state = state_provider_();
-          state.message_id = message_id_++;
-          
-          // Set appropriate robot mode based on control state
-          if (control_mode_active_.load()) {
-            state.robot_mode = protocol::RobotMode::kMove;
-            
-            // Set appropriate modes based on requested motion type
-            switch (requested_controller_mode_) {
-              case protocol::Move::ControllerMode::kJointImpedance:
-                state.controller_mode = protocol::ControllerMode::kJointImpedance;
-                break;
-              case protocol::Move::ControllerMode::kCartesianImpedance:
-                state.controller_mode = protocol::ControllerMode::kCartesianImpedance;
-                break;
-              case protocol::Move::ControllerMode::kExternalController:
-                state.controller_mode = protocol::ControllerMode::kExternalController;
-                break;
-              default:
-                state.controller_mode = protocol::ControllerMode::kExternalController;
-                break;
-            }
-            
-            // The controller mode handles torque vs impedance, motion generator mode is separate
-            switch (requested_motion_generator_mode_) {
-              case protocol::Move::MotionGeneratorMode::kJointPosition:
-                state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
-                break;
-              case protocol::Move::MotionGeneratorMode::kJointVelocity:
-                state.motion_generator_mode = protocol::MotionGeneratorMode::kJointVelocity;
-                break;
-              case protocol::Move::MotionGeneratorMode::kCartesianPosition:
-                state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianPosition;
-                break;
-              case protocol::Move::MotionGeneratorMode::kCartesianVelocity:
-                state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianVelocity;
-                break;
-              default:
-                state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
-                break;
-            }
-          } else {
-            // Read-only mode (for echo_robot_state)
-            state.robot_mode = protocol::RobotMode::kIdle;
-            state.motion_generator_mode = protocol::MotionGeneratorMode::kIdle;
-            state.controller_mode = protocol::ControllerMode::kOther;
-          }
-          
-          state.control_command_success_rate = 1.0;
-          state.errors.fill(false);
-          state.reflex_reason.fill(false);
-          
-          ssize_t sent = sendto(udp_socket_fd_, &state, sizeof(state), 0,
-                               (struct sockaddr*)&udp_client_addr_, sizeof(udp_client_addr_));
-          
-          last_state_time = current_time;
-          
-          // Debug every 1000 loops (every ~1 second)
-          if (loop_count % 1000 == 0) {
-            char state_msg[256];
-            sprintf(state_msg, "[FCI Sim Server] Sent robot state #%d: msg_id=%lu, sent=%ld bytes (mode: %s)", 
-                    loop_count, state.message_id, sent, 
-                    control_mode_active_.load() ? "CONTROL" : "READ_ONLY");
-            log_message(state_msg);
-          }
-        }
-      }
-      
-      // If in control mode, check for incoming UDP commands
-      if (control_mode_active_.load()) {
-        protocol::RobotCommand command{};
-        sockaddr_in from_addr{};
-        socklen_t from_len = sizeof(from_addr);
-        
-        struct timeval timeout;
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 100; // 100μs timeout (non-blocking)
-        setsockopt(udp_socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-        
-        ssize_t received = recvfrom(udp_socket_fd_, &command, sizeof(command), 0,
-                                   (struct sockaddr*)&from_addr, &from_len);
-        
-        if (received == sizeof(command)) {
-          // SUCCESS: Process the command
-          char success_msg[256];
-          sprintf(success_msg, "[FCI Sim Server] *** RECEIVED UDP COMMAND *** from %s:%d, msg_id=%lu", 
-                  inet_ntoa(from_addr.sin_addr), ntohs(from_addr.sin_port), command.message_id);
-          log_message(success_msg);
-          
-          if (command_handler_) {
-            command_handler_(command);
-          }
-          
-          // Send immediate response state
-          if (state_provider_) {
-            protocol::RobotState response_state = state_provider_();
-            response_state.message_id = command.message_id + 1;
-            response_state.robot_mode = protocol::RobotMode::kMove;
-            
-            // Use the requested controller mode, not hardcoded external controller
-            switch (requested_controller_mode_) {
-              case protocol::Move::ControllerMode::kJointImpedance:
-                response_state.controller_mode = protocol::ControllerMode::kJointImpedance;
-                break;
-              case protocol::Move::ControllerMode::kCartesianImpedance:
-                response_state.controller_mode = protocol::ControllerMode::kCartesianImpedance;
-                break;
-              case protocol::Move::ControllerMode::kExternalController:
-                response_state.controller_mode = protocol::ControllerMode::kExternalController;
-                break;
-              default:
-                response_state.controller_mode = protocol::ControllerMode::kExternalController;
-                break;
-            }
-            
-            // Convert from Move::MotionGeneratorMode to MotionGeneratorMode
-            switch (requested_motion_generator_mode_) {
-              case protocol::Move::MotionGeneratorMode::kJointPosition:
-                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
-                break;
-              case protocol::Move::MotionGeneratorMode::kJointVelocity:
-                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointVelocity;
-                break;
-              case protocol::Move::MotionGeneratorMode::kCartesianPosition:
-                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianPosition;
-                break;
-              case protocol::Move::MotionGeneratorMode::kCartesianVelocity:
-                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianVelocity;
-                break;
-              default:
-                response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
-                break;
-            }
-            
-            response_state.control_command_success_rate = 1.0;
-            response_state.errors.fill(false);
-            response_state.reflex_reason.fill(false);
-            
-            ssize_t sent = sendto(udp_socket_fd_, &response_state, sizeof(response_state), 0,
-                                 (struct sockaddr*)&from_addr, sizeof(from_addr));
-            
-            char response_msg[256];
-            sprintf(response_msg, "[FCI Sim Server] Sent UDP response: cmd_id=%lu -> state_id=%lu", 
-                    command.message_id, response_state.message_id);
-            log_message(response_msg);
-            
-            message_id_ = response_state.message_id;
-          }
-        }
-      }
-      
-      loop_count++;
-      std::this_thread::sleep_for(std::chrono::microseconds(1000)); // 1kHz
-    }
-    log_message("[FCI Sim Server] Background UDP state transmission stopped");
+  // Start the UDP control loop thread
+  log_message("[FCI Sim Server] Starting UDP control loop thread");
+  std::thread udp_thread([this]() {
+    udp_control_loop();
   });
-  udp_state_thread.detach(); // Run in background
-  
-  // Small delay to ensure libfranka receives the initial state
-  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  udp_thread.detach();
 }
 
 void FrankaFciSimServer::handle_tcp_commands() {
@@ -561,7 +382,13 @@ void FrankaFciSimServer::handle_move_command(const protocol::CommandHeader& head
     }
   }
   
-  // Send Move::Response
+  // Enable control mode BEFORE sending response
+  control_mode_active_ = true;
+  current_motion_id_ = header.command_id;
+  first_state_after_move_sent_ = false;
+  
+  // IMPORTANT: According to the Python implementation, we send kMotionStarted response
+  // and the actual kSuccess response is sent AFTER the first UDP state is transmitted
   protocol::CommandHeader response_header(
     protocol::Command::kMove,
     header.command_id,
@@ -572,18 +399,14 @@ void FrankaFciSimServer::handle_move_command(const protocol::CommandHeader& head
   
   if (write_exact(tcp_client_fd_, &response_header, sizeof(response_header)) &&
       write_exact(tcp_client_fd_, &response, sizeof(response))) {
-    log_message("[FCI Sim Server] Sent Move success response - starting motion");
+    log_message("[FCI Sim Server] Sent Move kMotionStarted response");
   } else {
     log_message("[FCI Sim Server] Failed to send Move response");
     return;
   }
   
-  // IMPORTANT: We're already sending UDP states in background after Connect
-  // Now we need to upgrade to active control mode that handles commands
-  log_message("[FCI Sim Server] Move command processed, upgrading to active control mode");
-  
-  // Mark that we're now in control mode (the background thread will pick this up)
-  control_mode_active_ = true;
+  // The actual Move success will be sent by the UDP loop after first state
+  log_message("[FCI Sim Server] Move command processed, control mode activated");
 }
 
 void FrankaFciSimServer::handle_stop_move_command(const protocol::CommandHeader& header) {
@@ -740,15 +563,6 @@ void FrankaFciSimServer::handle_generic_command(const protocol::CommandHeader& h
 void FrankaFciSimServer::udp_control_loop() {
   log_message("[FCI Sim Server] UDP control loop started");
   
-  // Debug: Print UDP client address
-  char addr_debug[256];
-  sprintf(addr_debug, "[FCI Sim Server] UDP client address: %s:%d", 
-          inet_ntoa(udp_client_addr_.sin_addr), ntohs(udp_client_addr_.sin_port));
-  log_message(addr_debug);
-  
-  // Start sending robot state immediately at 1kHz
-  log_message("[FCI Sim Server] Starting continuous robot state transmission...");
-  
   int loop_count = 0;
   auto last_state_time = std::chrono::steady_clock::now();
   
@@ -760,40 +574,43 @@ void FrankaFciSimServer::udp_control_loop() {
       if (state_provider_) {
         protocol::RobotState state = state_provider_();
         state.message_id = message_id_++;
-        state.robot_mode = protocol::RobotMode::kMove; // Set to Move mode for active control
         
-        // Set appropriate modes based on requested motion type
-        switch (requested_controller_mode_) {
-          case protocol::Move::ControllerMode::kJointImpedance:
-            state.controller_mode = protocol::ControllerMode::kJointImpedance;
-            break;
-          case protocol::Move::ControllerMode::kCartesianImpedance:
-            state.controller_mode = protocol::ControllerMode::kCartesianImpedance;
-            break;
-          case protocol::Move::ControllerMode::kExternalController:
-            state.controller_mode = protocol::ControllerMode::kExternalController;
-            break;
-          default:
-            state.controller_mode = protocol::ControllerMode::kExternalController;
-            break;
-        }
-        
-        switch (requested_motion_generator_mode_) {
-          case protocol::Move::MotionGeneratorMode::kJointPosition:
-            state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
-            break;
-          case protocol::Move::MotionGeneratorMode::kJointVelocity:
-            state.motion_generator_mode = protocol::MotionGeneratorMode::kJointVelocity;
-            break;
-          case protocol::Move::MotionGeneratorMode::kCartesianPosition:
-            state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianPosition;
-            break;
-          case protocol::Move::MotionGeneratorMode::kCartesianVelocity:
-            state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianVelocity;
-            break;
-          default:
-            state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
-            break;
+        // Set mode based on control state
+        if (control_mode_active_.load()) {
+          state.robot_mode = protocol::RobotMode::kMove;
+          
+          // Set appropriate modes based on requested motion type
+          switch (requested_controller_mode_) {
+            case protocol::Move::ControllerMode::kJointImpedance:
+              state.controller_mode = protocol::ControllerMode::kJointImpedance;
+              break;
+            case protocol::Move::ControllerMode::kCartesianImpedance:
+              state.controller_mode = protocol::ControllerMode::kCartesianImpedance;
+              break;
+            case protocol::Move::ControllerMode::kExternalController:
+              state.controller_mode = protocol::ControllerMode::kExternalController;
+              break;
+          }
+          
+          switch (requested_motion_generator_mode_) {
+            case protocol::Move::MotionGeneratorMode::kJointPosition:
+              state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
+              break;
+            case protocol::Move::MotionGeneratorMode::kJointVelocity:
+              state.motion_generator_mode = protocol::MotionGeneratorMode::kJointVelocity;
+              break;
+            case protocol::Move::MotionGeneratorMode::kCartesianPosition:
+              state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianPosition;
+              break;
+            case protocol::Move::MotionGeneratorMode::kCartesianVelocity:
+              state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianVelocity;
+              break;
+          }
+        } else {
+          // Idle mode
+          state.robot_mode = protocol::RobotMode::kIdle;
+          state.motion_generator_mode = protocol::MotionGeneratorMode::kIdle;
+          state.controller_mode = protocol::ControllerMode::kOther;
         }
         
         state.control_command_success_rate = 1.0;
@@ -805,11 +622,30 @@ void FrankaFciSimServer::udp_control_loop() {
         
         last_state_time = current_time;
         
-        // Debug every 1000 loops (every ~1 second)
+        // After first state following Move command, send TCP Move success
+        if (control_mode_active_.load() && !first_state_after_move_sent_.load() && current_motion_id_.load() > 0) {
+          protocol::CommandHeader success_header(
+            protocol::Command::kMove,
+            current_motion_id_.load(),
+            sizeof(protocol::CommandHeader) + sizeof(protocol::Move::Response)
+          );
+          
+          protocol::Move::Response success_response(protocol::Move::Status::kSuccess);
+          
+          if (write_exact(tcp_client_fd_, &success_header, sizeof(success_header)) &&
+              write_exact(tcp_client_fd_, &success_response, sizeof(success_response))) {
+            log_message("[FCI Sim Server] Sent Move kSuccess response after first state");
+          }
+          
+          first_state_after_move_sent_ = true;
+        }
+        
+        // Debug every 1000 loops
         if (loop_count % 1000 == 0) {
           char state_msg[256];
-          sprintf(state_msg, "[FCI Sim Server] Sent robot state #%d: msg_id=%lu, sent=%ld bytes", 
-                  loop_count, state.message_id, sent);
+          sprintf(state_msg, "[FCI Sim Server] State #%d: msg_id=%lu, mode=%d, ctrl=%d, motion=%d", 
+                  loop_count, state.message_id, (int)state.robot_mode, 
+                  (int)state.controller_mode, (int)state.motion_generator_mode);
           log_message(state_msg);
         }
       }
@@ -835,63 +671,48 @@ void FrankaFciSimServer::udp_control_loop() {
               inet_ntoa(from_addr.sin_addr), ntohs(from_addr.sin_port), command.message_id);
       log_message(success_msg);
       
-      if (command_handler_) {
-        command_handler_(command);
-      }
-      
-      // Send immediate response state
-      if (state_provider_) {
-        protocol::RobotState response_state = state_provider_();
-        response_state.message_id = command.message_id + 1;
-        response_state.robot_mode = protocol::RobotMode::kMove;
+      // Check if motion is finished BEFORE processing command
+      if (command.motion.motion_generation_finished) {
+        log_message("[FCI Sim Server] Motion finished - switching to idle");
+        control_mode_active_ = false;
         
-        // Use the requested controller mode, not hardcoded external controller
-        switch (requested_controller_mode_) {
-          case protocol::Move::ControllerMode::kJointImpedance:
-            response_state.controller_mode = protocol::ControllerMode::kJointImpedance;
-            break;
-          case protocol::Move::ControllerMode::kCartesianImpedance:
-            response_state.controller_mode = protocol::ControllerMode::kCartesianImpedance;
-            break;
-          case protocol::Move::ControllerMode::kExternalController:
-            response_state.controller_mode = protocol::ControllerMode::kExternalController;
-            break;
-          default:
-            response_state.controller_mode = protocol::ControllerMode::kExternalController;
-            break;
+        // Send final state with idle mode
+        if (state_provider_) {
+          protocol::RobotState final_state = state_provider_();
+          final_state.message_id = message_id_++;
+          final_state.robot_mode = protocol::RobotMode::kIdle;
+          final_state.motion_generator_mode = protocol::MotionGeneratorMode::kIdle;
+          final_state.controller_mode = protocol::ControllerMode::kOther;
+          final_state.control_command_success_rate = 1.0;
+          final_state.errors.fill(false);
+          final_state.reflex_reason.fill(false);
+          
+          sendto(udp_socket_fd_, &final_state, sizeof(final_state), 0,
+                (struct sockaddr*)&udp_client_addr_, sizeof(udp_client_addr_));
         }
         
-        // Convert from Move::MotionGeneratorMode to MotionGeneratorMode
-        switch (requested_motion_generator_mode_) {
-          case protocol::Move::MotionGeneratorMode::kJointPosition:
-            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
-            break;
-          case protocol::Move::MotionGeneratorMode::kJointVelocity:
-            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointVelocity;
-            break;
-          case protocol::Move::MotionGeneratorMode::kCartesianPosition:
-            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianPosition;
-            break;
-          case protocol::Move::MotionGeneratorMode::kCartesianVelocity:
-            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kCartesianVelocity;
-            break;
-          default:
-            response_state.motion_generator_mode = protocol::MotionGeneratorMode::kJointPosition;
-            break;
+        // Send TCP Move success response for the motion completion
+        if (current_motion_id_.load() > 0) {
+          protocol::CommandHeader final_header(
+            protocol::Command::kMove,
+            current_motion_id_.load(),
+            sizeof(protocol::CommandHeader) + sizeof(protocol::Move::Response)
+          );
+          
+          protocol::Move::Response final_response(protocol::Move::Status::kSuccess);
+          
+          if (write_exact(tcp_client_fd_, &final_header, sizeof(final_header)) &&
+              write_exact(tcp_client_fd_, &final_response, sizeof(final_response))) {
+            log_message("[FCI Sim Server] Sent final Move kSuccess response for motion completion");
+          }
+          
+          current_motion_id_ = 0;
         }
-        response_state.control_command_success_rate = 1.0;
-        response_state.errors.fill(false);
-        response_state.reflex_reason.fill(false);
-        
-        ssize_t sent = sendto(udp_socket_fd_, &response_state, sizeof(response_state), 0,
-                             (struct sockaddr*)&from_addr, sizeof(from_addr));
-        
-        char response_msg[256];
-        sprintf(response_msg, "[FCI Sim Server] Sent UDP response: cmd_id=%lu -> state_id=%lu", 
-                command.message_id, response_state.message_id);
-        log_message(response_msg);
-        
-        message_id_ = response_state.message_id;
+      } else {
+        // Normal command processing
+        if (command_handler_) {
+          command_handler_(command);
+        }
       }
     } else if (received > 0) {
       // Unexpected size - log occasionally

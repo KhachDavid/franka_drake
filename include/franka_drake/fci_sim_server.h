@@ -78,6 +78,10 @@ class FrankaFciSimServer {
   
   // Control mode flag to switch from read-only to active control
   std::atomic<bool> control_mode_active_{false};
+  
+  // Track current motion command ID for Move success response
+  std::atomic<uint32_t> current_motion_id_{0};
+  std::atomic<bool> first_state_after_move_sent_{false};
 };
 
 }  // namespace franka_fci_sim 
