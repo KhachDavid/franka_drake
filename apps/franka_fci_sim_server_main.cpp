@@ -604,11 +604,31 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
       static int pos_ctrl_count = 0;
       if (++pos_ctrl_count <= 10 || pos_ctrl_count % 1000 == 0) {
         std::cout << "[Position Control] Iteration " << pos_ctrl_count << ":" << std::endl;
-        std::cout << "  Target q[6]: " << std::fixed << std::setprecision(4) << target_q[6] << std::endl;
-        std::cout << "  Current q[6]: " << std::fixed << std::setprecision(4) << current_q[6] << std::endl;
-        std::cout << "  Error[6]: " << std::fixed << std::setprecision(4) << (target_q[6] - current_q[6]) << std::endl;
-        std::cout << "  Velocity[6]: " << std::fixed << std::setprecision(4) << current_dq[6] << " rad/s" << std::endl;
-        std::cout << "  Torque[6]: " << std::fixed << std::setprecision(4) << control_torques[6] << " Nm" << std::endl;
+        
+        // Print ALL joint targets and errors
+        std::cout << "  Target q: [";
+        for (int i = 0; i < expected_num_arm_joints_; ++i) {
+          std::cout << std::fixed << std::setprecision(3) << target_q[i] << (i < 6 ? ", " : "");
+        }
+        std::cout << "]" << std::endl;
+        
+        std::cout << "  Current q: [";
+        for (int i = 0; i < expected_num_arm_joints_; ++i) {
+          std::cout << std::fixed << std::setprecision(3) << current_q[i] << (i < 6 ? ", " : "");
+        }
+        std::cout << "]" << std::endl;
+        
+        std::cout << "  Errors: [";
+        for (int i = 0; i < expected_num_arm_joints_; ++i) {
+          std::cout << std::fixed << std::setprecision(3) << (target_q[i] - current_q[i]) << (i < 6 ? ", " : "");
+        }
+        std::cout << "]" << std::endl;
+        
+        std::cout << "  Torques: [";
+        for (int i = 0; i < expected_num_arm_joints_; ++i) {
+          std::cout << std::fixed << std::setprecision(2) << control_torques[i] << (i < 6 ? ", " : "");
+        }
+        std::cout << "]" << std::endl;
       }
        
      } else {

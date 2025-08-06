@@ -45,6 +45,7 @@ class FrankaFciSimServer {
   void handle_set_joint_impedance_command(const protocol::CommandHeader& header);
   void handle_set_cartesian_impedance_command(const protocol::CommandHeader& header);
   void handle_automatic_error_recovery_command(const protocol::CommandHeader& header);
+  void handle_load_model_command(const protocol::CommandHeader& header);
   void handle_move_command(const protocol::CommandHeader& header);
   void handle_stop_move_command(const protocol::CommandHeader& header);
   void handle_generic_command(const protocol::CommandHeader& header);
@@ -82,6 +83,9 @@ class FrankaFciSimServer {
   // Track current motion command ID for Move success response
   std::atomic<uint32_t> current_motion_id_{0};
   std::atomic<bool> first_state_after_move_sent_{false};
+  
+  // UDP thread management
+  std::atomic<bool> udp_thread_running_{false};
 };
 
 }  // namespace franka_fci_sim 

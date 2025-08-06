@@ -1,5 +1,6 @@
 #include "franka_drake/fci_sim_server.h"
 #include "franka_drake/protocol/service_types.h"
+#include "franka_drake/model_library_data.h"
 
 #include <iostream>
 #include <fstream>
@@ -145,6 +146,29 @@ void FrankaFciSimServer::run() {
 }
 
 void FrankaFciSimServer::handle_client_connection() {
+  // Wait for any previous UDP thread to finish
+  if (udp_thread_running_) {
+    log_message("[FCI Sim Server] Waiting for previous UDP thread to finish...");
+    udp_client_ready_ = false;  // Signal the thread to stop
+    
+    // Wait up to 2 seconds for the thread to finish
+    for (int i = 0; i < 20 && udp_thread_running_; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    
+    if (udp_thread_running_) {
+      log_message("[FCI Sim Server] WARNING: Previous UDP thread still running!");
+    }
+  }
+  
+  // Reset motion state for new connection
+  control_mode_active_ = false;
+  current_motion_id_ = 0;
+  first_state_after_move_sent_ = false;
+  message_id_ = 0;  // Reset message counter too
+  
+  log_message("[FCI Sim Server] Reset motion state for new client connection");
+  
   // --- FCI Handshake via TCP ---
   // 1. Connect - First read the command header to understand the message structure
   log_message("[FCI Sim Server] Reading TCP command header...");
@@ -293,6 +317,10 @@ void FrankaFciSimServer::handle_tcp_commands() {
         
       case protocol::Command::kAutomaticErrorRecovery:
         handle_automatic_error_recovery_command(cmd_header);
+        break;
+        
+      case protocol::Command::kLoadModelLibrary:
+        handle_load_model_command(cmd_header);
         break;
         
       case protocol::Command::kMove:
@@ -531,6 +559,70 @@ void FrankaFciSimServer::handle_automatic_error_recovery_command(const protocol:
   }
 }
 
+void FrankaFciSimServer::handle_load_model_command(const protocol::CommandHeader& header) {
+  log_message("[FCI Sim Server] Handling LoadModelLibrary command");
+  
+  // Read the request payload
+  protocol::LoadModelLibrary::Request request(
+    protocol::LoadModelLibrary::Architecture::kX64,
+    protocol::LoadModelLibrary::System::kLinux
+  );
+  
+  if (header.size > sizeof(header)) {
+    size_t payload_size = header.size - sizeof(header);
+    if (payload_size >= sizeof(request)) {
+      read_exact(tcp_client_fd_, &request, sizeof(request));
+      // Read any extra bytes
+      if (payload_size > sizeof(request)) {
+        std::vector<uint8_t> extra(payload_size - sizeof(request));
+        read_exact(tcp_client_fd_, extra.data(), extra.size());
+      }
+    } else {
+      std::vector<uint8_t> payload(payload_size);
+      read_exact(tcp_client_fd_, payload.data(), payload_size);
+    }
+  }
+  
+  // For simulation, we send the actual compiled model library
+  // The response format is:
+  // - CommandHeader
+  // - Status (1 byte) 
+  // - Model library data (variable length)
+  
+  size_t model_size = franka_model::MODEL_LIBRARY_SIZE;
+  size_t response_size = sizeof(protocol::CommandHeader) + 1 + model_size;
+  
+  protocol::CommandHeader response_header(
+    protocol::Command::kLoadModelLibrary,
+    header.command_id,
+    response_size
+  );
+  
+  protocol::LoadModelLibrary::Status status = protocol::LoadModelLibrary::Status::kSuccess;
+  
+  // Send header
+  if (!write_exact(tcp_client_fd_, &response_header, sizeof(response_header))) {
+    log_message("[FCI Sim Server] Failed to send LoadModelLibrary response header");
+    return;
+  }
+  
+  // Send status
+  if (!write_exact(tcp_client_fd_, &status, sizeof(status))) {
+    log_message("[FCI Sim Server] Failed to send LoadModelLibrary status");
+    return;
+  }
+  
+  // Send model data
+  if (!write_exact(tcp_client_fd_, franka_model::MODEL_LIBRARY_DATA, model_size)) {
+    log_message("[FCI Sim Server] Failed to send LoadModelLibrary model data");
+    return;
+  }
+  
+  char msg[256];
+  sprintf(msg, "[FCI Sim Server] Sent LoadModelLibrary response with %zu bytes model", model_size);
+  log_message(msg);
+}
+
 void FrankaFciSimServer::handle_generic_command(const protocol::CommandHeader& header) {
   char msg[256];
   sprintf(msg, "[FCI Sim Server] Handling generic command %u (not implemented)", static_cast<uint32_t>(header.command));
@@ -562,6 +654,7 @@ void FrankaFciSimServer::handle_generic_command(const protocol::CommandHeader& h
 
 void FrankaFciSimServer::udp_control_loop() {
   log_message("[FCI Sim Server] UDP control loop started");
+  udp_thread_running_ = true;
   
   int loop_count = 0;
   auto last_state_time = std::chrono::steady_clock::now();
@@ -671,13 +764,14 @@ void FrankaFciSimServer::udp_control_loop() {
               inet_ntoa(from_addr.sin_addr), ntohs(from_addr.sin_port), command.message_id);
       log_message(success_msg);
       
-      // Check if motion is finished BEFORE processing command
-      if (command.motion.motion_generation_finished) {
-        log_message("[FCI Sim Server] Motion finished - switching to idle");
-        control_mode_active_ = false;
-        
-        // Send final state with idle mode
-        if (state_provider_) {
+          // Check if motion is finished BEFORE processing command
+    if (command.motion.motion_generation_finished) {
+      log_message("[FCI Sim Server] Motion finished - switching to idle");
+      control_mode_active_ = false;
+      first_state_after_move_sent_ = false;  // Reset for next motion
+      
+      // Send final state with idle mode
+      if (state_provider_) {
           protocol::RobotState final_state = state_provider_();
           final_state.message_id = message_id_++;
           final_state.robot_mode = protocol::RobotMode::kIdle;
@@ -732,6 +826,7 @@ void FrankaFciSimServer::udp_control_loop() {
   }
   
   log_message("[FCI Sim Server] UDP control loop ended");
+  udp_thread_running_ = false;
 }
 
 void FrankaFciSimServer::stop() {
