@@ -18,7 +18,6 @@ sim_sandbox
 run_simulator_server
 drake_simple_example
 test_robot_movement
-*.txt
 # IDE files
 .vscode/
 .idea/
