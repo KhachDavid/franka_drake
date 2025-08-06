@@ -4,6 +4,9 @@
 
 [Screencast from 2025-08-06 00-48-22.webm](https://github.com/user-attachments/assets/f4ed9f79-a1ca-4dfe-8385-372a05d994eb)
 
+[Screencast from 2025-08-06 01-47-48.webm](https://github.com/user-attachments/assets/a14c2773-33a7-4ac1-ad62-6880efda13a4)
+
+
 
 ## Week of July 21
 
