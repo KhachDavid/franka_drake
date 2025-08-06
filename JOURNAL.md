@@ -2,6 +2,7 @@
 
 ## Week of July 28
 
+[Screencast from 2025-08-06 00-48-22.webm](https://github.com/user-attachments/assets/f4ed9f79-a1ca-4dfe-8385-372a05d994eb)
 
 
 ## Week of July 21
