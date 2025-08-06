@@ -1,6 +1,6 @@
-i#include <cmath>
+#include <cmath>
 #include <iostream>
-#include "log_error.h"
+// #include "log_error.h" // Not needed
 
 #include "examples_common.h"
 #include <franka/robot.h>
@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
     });
 
   } catch (const franka::Exception& e) {
-    logError(e);
+    std::cerr << e.what() << std::endl;
     return -1;
   }
   return 0;
