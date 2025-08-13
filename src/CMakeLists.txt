@@ -3,6 +3,8 @@ add_library(franka_drake_core STATIC
     franka_drake_module.cpp 
     simulator_server.cpp 
     fci_sim_server.cpp
+    embed_fci_sim.cpp
+    embed_fci_sim_helpers.cpp
 )
 
 # Set library properties

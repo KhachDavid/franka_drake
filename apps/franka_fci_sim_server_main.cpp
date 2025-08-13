@@ -147,7 +147,7 @@ private:
     };
     
     // Sign mapping between Drake plant joint convention and libfranka convention
-    static const std::array<double, 7> plant_to_franka_sign{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0};
+    static const std::array<double, 7> plant_to_franka_sign{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
 
     // Update arm joint states
     for (int i = 0; i < 7; ++i) {
@@ -391,7 +391,7 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
      Eigen::VectorXd control_torques(expected_num_arm_joints_); // Use expected_num_arm_joints_
      
       // IMPORTANT: Check torque control mode FIRST - no PID calculations at all!
-      static const std::array<double, 7> plant_to_franka_sign{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0};
+      static const std::array<double, 7> plant_to_franka_sign{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
       if (g_robot_state.has_torque_command) {
         // PURE TORQUE CONTROL: Pass-through, but compensate for outer gravity add
         // Evaluate current state and compute gravity torques for the arm, then subtract them
@@ -1130,7 +1130,7 @@ int main(int argc, char** argv) {
   q_des[3] = -3.0 * M_PI / 4.0;
   q_des[4] = 0.0;
   q_des[5] = M_PI / 2.0;
-  q_des[6] = -M_PI / 4.0;  // Negative here so reported q7 (+ after sign map) matches ROS 2 default
+  q_des[6] = M_PI / 4.0;  // Match ROS 2 default directly (no sign inversion)
   // If gripper joints are present, start opened
   if (n > 7) {
     for (int i = 7; i < n; ++i) {
