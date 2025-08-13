@@ -593,13 +593,12 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
         target_q[i] = plant_to_franka_sign[i] * g_robot_state.q_cmd[i];
       }
       
-      // Optimized impedance values for accurate smooth motion
-      // Higher stiffness for better tracking, with matched damping for stability
-       const double stiffness[7] = {100, 100, 100, 100, 60, 50, 40};  // N⋅m/rad (less aggressive)
-       const double damping[7] = {35, 35, 35, 35, 22, 18, 14};  // N⋅m⋅s/rad (more damping)
-      
-      // Integral gains to eliminate steady-state error
-       const double integral_gains[7] = {1.0, 1.0, 1.0, 1.0, 0.6, 0.5, 0.4};  // N⋅m⋅s/rad (lower integral)
+       // Safer default impedance values to avoid oscillations under outer planners
+       const double stiffness[7] = {60, 60, 60, 60, 40, 30, 25};   // N⋅m/rad
+       const double damping[7]   = {18, 18, 18, 18, 12, 10, 8};    // N⋅m⋅s/rad
+
+       // Disable integral by default for stability with MoveIt position commands
+       const double integral_gains[7] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
       
       // Calculate control torques: τ = K*(q_d - q) + Ki*∫(q_d - q)dt - D*dq
       for (int i = 0; i < expected_num_arm_joints_; ++i) {
@@ -612,19 +611,14 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
         
         // Limit velocity to reasonable values (safety check)
         double limited_velocity = current_dq[i];
-        const double max_velocity = 2.0; // rad/s
+        const double max_velocity = 1.5; // rad/s
         if (std::abs(limited_velocity) > max_velocity) {
           limited_velocity = (limited_velocity > 0) ? max_velocity : -max_velocity;
         }
-        // Clamp torques to safe limits
-        const double torque_limits[7] = {87.0, 87.0, 87.0, 87.0, 50.0, 50.0, 40.0};
-        for (int i = 0; i < expected_num_arm_joints_; ++i) {
-          control_torques[i] = std::max(-torque_limits[i], std::min(torque_limits[i], control_torques[i]));
-        }
-        
-        control_torques[i] = stiffness[i] * position_error + 
-                            integral_gains[i] * integral_errors_[i] - 
-                            damping[i] * limited_velocity;
+
+        control_torques[i] = stiffness[i] * position_error +
+                              integral_gains[i] * integral_errors_[i] -
+                              damping[i] * limited_velocity;
       }
       
       // Debug output
@@ -674,12 +668,21 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
        was_active = commands_active;
      }
      
-     // Apply torque limits for safety
-     // Reasonable limits that allow proper motion
-     const double torque_limits[7] = {87.0, 87.0, 87.0, 87.0, 50.0, 50.0, 40.0};
-     for (int i = 0; i < expected_num_arm_joints_; ++i) {
-       control_torques[i] = std::max(-torque_limits[i], std::min(torque_limits[i], control_torques[i]));
-     }
+      // Apply torque limits and rate limits for safety
+      const double torque_limits[7] = {60.0, 60.0, 60.0, 60.0, 35.0, 35.0, 30.0};
+      static Eigen::VectorXd last_tau = Eigen::VectorXd::Zero(7);
+      const double max_tau_rate = 500.0; // Nm/s equivalent (dt=1ms => 0.5 Nm step)
+      for (int i = 0; i < expected_num_arm_joints_; ++i) {
+        // Clamp absolute torque
+        double tau = std::max(-torque_limits[i], std::min(torque_limits[i], control_torques[i]));
+        // Rate limit
+        double delta = tau - last_tau[i];
+        double max_delta = max_tau_rate * 0.001;
+        if (delta > max_delta) tau = last_tau[i] + max_delta;
+        if (delta < -max_delta) tau = last_tau[i] - max_delta;
+        control_torques[i] = tau;
+        last_tau[i] = tau;
+      }
      
      // Log limited torque for debugging (check if we were in position control)
      static int debug_count = 0;
