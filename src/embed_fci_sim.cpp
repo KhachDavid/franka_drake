@@ -23,6 +23,7 @@
 #include <drake/systems/primitives/vector_log_sink.h>
 
 #include "franka_drake/fci_sim_server.h"
+// Using in-file impedance wrapper for parity with server main
 
 namespace franka_fci_sim {
 
@@ -166,6 +167,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
   builder->Connect(plant->get_state_output_port(), g_comp->get_input_port_estimated_state());
 
   // Full-featured impedance/velocity/cartesian/torque controller (parity with app).
+  // Restore in-file impedance controller wrapper
   class ImpedanceWrapper final : public drake::systems::LeafSystem<double> {
    public:
     explicit ImpedanceWrapper(const drake::multibody::MultibodyPlant<double>* plant,
@@ -195,7 +197,9 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       static const double max_tau_rate = 500.0; // Nm/s
       static Eigen::VectorXd last_tau = Eigen::VectorXd::Zero(7);
 
-      // TORQUE CONTROL: pass-through minus gravity
+      const bool commands_active = (std::chrono::duration<double>(std::chrono::steady_clock::now() - st.last_command_time).count() < 0.1);
+
+      // TORQUE CONTROL: pass-through minus gravity (matches app high limits, no rate limit)
       if (st.has_torque_command) {
         // Match app behavior: subtract gravity, clamp to high limits, and return early (no rate limit)
         Eigen::VectorXd tau_g = plant_->CalcGravityGeneralizedForces(*plant_context_);
@@ -211,7 +215,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         return;
       }
       // VELOCITY CONTROL
-      else if (st.has_velocity_command && (std::chrono::duration<double>(std::chrono::steady_clock::now() - st.last_command_time).count() < 0.1)) {
+      else if (st.has_velocity_command && commands_active) {
         const double Kp[7] = {40,40,40,40,25,20,18};
         const double Ki[7] = {4,4,4,4,2.5,2.0,1.8};
         for (int i = 0; i < arm_joints_; ++i) {
@@ -221,7 +225,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         }
       }
       // CARTESIAN CONTROL (position or velocity)
-      else if ((st.has_cartesian_command || st.has_cartesian_velocity_command) && (std::chrono::duration<double>(std::chrono::steady_clock::now() - st.last_command_time).count() < 0.1)) {
+      else if ((st.has_cartesian_command || st.has_cartesian_velocity_command) && commands_active) {
         Eigen::MatrixXd J(6, arm_joints_);
         plant_->CalcJacobianSpatialVelocity(*plant_context_, drake::multibody::JacobianWrtVariable::kQDot,
                                             plant_->GetFrameByName(st.ee_frame_name, robot_), Eigen::Vector3d::Zero(),
@@ -251,22 +255,25 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         }
         tau = J.transpose() * F;
       }
-      // POSITION CONTROL (default hold/track)
-      else {
+      // POSITION CONTROL (only when we have active position commands)
+      else if (st.has_position_command && commands_active) {
         const double K[7] = {60,60,60,60,40,30,25};
         const double D[7] = {18,18,18,18,12,10,8};
-        // Sign mapping consistent with app (currently all +1, but keep for parity)
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
         for (int i = 0; i < arm_joints_; ++i) {
           double qd = plant_to_franka_sign[i] * st.q_cmd[i];
           double e = qd - q[i];
           double v = dq[i];
-          // No integral by default for stability
+          const double max_velocity = 1.5; // rad/s safety clamp
+          if (std::abs(v) > max_velocity) v = (v > 0) ? max_velocity : -max_velocity;
           tau[i] = K[i] * e - D[i] * v;
         }
+      } else {
+        tau.setZero();
+        integral_errors_.setZero();
+        velocity_integral_errors_.setZero();
       }
 
-      // Torque clamp and rate limit (not applied in torque mode due to early return)
       for (int i = 0; i < arm_joints_; ++i) {
         double t = std::clamp(tau[i], -torque_limits[i], torque_limits[i]);
         double delta = t - last_tau[i];
