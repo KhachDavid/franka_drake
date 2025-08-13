@@ -146,18 +146,23 @@ private:
         "fer_joint5", "fer_joint6", "fer_joint7"
     };
     
+    // Sign mapping between Drake plant joint convention and libfranka convention
+    static const std::array<double, 7> plant_to_franka_sign{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0};
+
     // Update arm joint states
     for (int i = 0; i < 7; ++i) {
       const auto& joint = plant_.GetJointByName<drake::multibody::RevoluteJoint>(joint_names[i], robot_);
-      g_robot_state.q[i] = joint.get_angle(plant_context);
-      
-      g_robot_state.dq[i] = joint.get_angular_rate(plant_context);
+      const double q_pl = joint.get_angle(plant_context);
+      const double dq_pl = joint.get_angular_rate(plant_context);
+      g_robot_state.q[i] = plant_to_franka_sign[i] * q_pl;
+      g_robot_state.dq[i] = plant_to_franka_sign[i] * dq_pl;
       
       // Apply simple first-order low-pass filter for velocity
       const double alpha = 0.8;  // Filter coefficient (0 = no filtering, 1 = no update)
       g_robot_state.dq_filtered[i] = alpha * g_robot_state.dq_filtered[i] + (1 - alpha) * g_robot_state.dq[i];
       
-      g_robot_state.tau_J[i] = 0.1 * sin(g_robot_state.q[i]);  // Simple gravity estimate
+      // Very rough torque placeholder (kept); align sign to franka space
+      g_robot_state.tau_J[i] = plant_to_franka_sign[i] * (0.1 * sin(q_pl));
     }
     
     // Update gripper states if present
@@ -166,8 +171,10 @@ private:
         try {
           const auto& joint = plant_.GetJointByName(g_robot_state.gripper_joint_names[i], robot_);
           if (joint.num_positions() == 1) {
-            g_robot_state.gripper_q[i] = plant_.GetPositions(plant_context, robot_)[7 + i];
-            g_robot_state.gripper_dq[i] = plant_.GetVelocities(plant_context, robot_)[7 + i];
+            // Map Drake finger joints to Franka order (1: left, 2: right)
+            const int idx = (g_robot_state.gripper_joint_names[i].find("finger_joint1") != std::string::npos) ? 0 : 1;
+            g_robot_state.gripper_q[idx] = plant_.GetPositions(plant_context, robot_)[7 + i];
+            g_robot_state.gripper_dq[idx] = plant_.GetVelocities(plant_context, robot_)[7 + i];
           }
         } catch (const std::exception&) {
           // Keep previous values if read fails
@@ -383,34 +390,47 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
      
      Eigen::VectorXd control_torques(expected_num_arm_joints_); // Use expected_num_arm_joints_
      
-     // IMPORTANT: Check torque control mode FIRST - no PID calculations at all!
-     if (g_robot_state.has_torque_command) {
-       // PURE TORQUE CONTROL: Direct torque pass-through, no PID at all
-       for (int i = 0; i < expected_num_arm_joints_; ++i) { // Use expected_num_arm_joints_
-         control_torques[i] = g_robot_state.tau_cmd[i];
-       }
-       
-       // Reset integral errors when in torque mode
-       integral_errors_.setZero();
-       velocity_integral_errors_.setZero();
-       
-       // Apply torque limits for safety and output immediately
-       const double torque_limits[7] = {87.0, 87.0, 87.0, 87.0, 50.0, 50.0, 40.0};
-       for (int i = 0; i < expected_num_arm_joints_; ++i) {
-         control_torques[i] = std::max(-torque_limits[i], std::min(torque_limits[i], control_torques[i]));
-       }
-       
-       output->SetFromVector(control_torques);
-       return;  // EARLY RETURN - No PID calculations in torque mode!
-     }
+      // IMPORTANT: Check torque control mode FIRST - no PID calculations at all!
+      static const std::array<double, 7> plant_to_franka_sign{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0};
+      if (g_robot_state.has_torque_command) {
+        // PURE TORQUE CONTROL: Pass-through, but compensate for outer gravity add
+        // Evaluate current state and compute gravity torques for the arm, then subtract them
+        const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
+        Eigen::VectorXd current_q = state_input.head(expected_num_total_joints_);
+        Eigen::VectorXd current_dq = state_input.tail(expected_num_total_joints_);
+
+        plant_->SetPositions(plant_context_.get(), robot_instance_, current_q.head(expected_num_total_joints_));
+        plant_->SetVelocities(plant_context_.get(), robot_instance_, current_dq.head(expected_num_total_joints_));
+
+        Eigen::VectorXd tau_g = plant_->CalcGravityGeneralizedForces(*plant_context_);
+
+         for (int i = 0; i < expected_num_arm_joints_; ++i) {
+          // Convert commanded torques from Franka convention to plant, then subtract gravity
+          const double tau_cmd_pl = plant_to_franka_sign[i] * g_robot_state.tau_cmd[i];
+          control_torques[i] = tau_cmd_pl - tau_g[i];
+        }
+
+        // Reset integral errors when in torque mode
+        integral_errors_.setZero();
+        velocity_integral_errors_.setZero();
+
+        // Apply torque limits for safety and output immediately
+        const double torque_limits[7] = {87.0, 87.0, 87.0, 87.0, 50.0, 50.0, 40.0};
+        for (int i = 0; i < expected_num_arm_joints_; ++i) {
+          control_torques[i] = std::max(-torque_limits[i], std::min(torque_limits[i], control_torques[i]));
+        }
+
+        output->SetFromVector(control_torques);
+        return;  // EARLY RETURN - No PID calculations in torque mode!
+      }
      
      // Check if commands have timed out (no new commands for 100ms)
      auto now = std::chrono::steady_clock::now();
      double time_since_last_cmd = std::chrono::duration<double>(now - g_robot_state.last_command_time).count();
      bool commands_active = time_since_last_cmd < 0.1; // 100ms timeout
      
-     // VELOCITY CONTROL: PD control on velocity
-     if (g_robot_state.has_velocity_command && commands_active) {
+      // VELOCITY CONTROL: PI control on velocity (more damping, clamp output)
+      if (g_robot_state.has_velocity_command && commands_active) {
        // Get current robot state from input
        const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
        Eigen::VectorXd current_q = state_input.head(expected_num_total_joints_);
@@ -418,16 +438,17 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
        
        // Target velocities from FCI commands
        Eigen::VectorXd target_dq(expected_num_arm_joints_);
-       for (int i = 0; i < expected_num_arm_joints_; ++i) {
-         target_dq[i] = g_robot_state.dq_cmd[i];
-       }
+        for (int i = 0; i < expected_num_arm_joints_; ++i) {
+          // Convert target velocities to plant convention
+          target_dq[i] = plant_to_franka_sign[i] * g_robot_state.dq_cmd[i];
+        }
        
        // Velocity control gains
-       const double velocity_p_gains[7] = {50, 50, 50, 50, 30, 25, 20};  // N⋅m⋅s/rad
-       const double velocity_i_gains[7] = {10, 10, 10, 10, 5, 5, 5};    // N⋅m⋅s²/rad
+        const double velocity_p_gains[7] = {40, 40, 40, 40, 25, 20, 18};  // N⋅m⋅s/rad
+        const double velocity_i_gains[7] = {4, 4, 4, 4, 2.5, 2.0, 1.8};    // N⋅m⋅s²/rad
        
        // Calculate control torques: τ = Kp*(dq_d - dq) + Ki*∫(dq_d - dq)dt
-       for (int i = 0; i < expected_num_arm_joints_; ++i) {
+        for (int i = 0; i < expected_num_arm_joints_; ++i) {
          double velocity_error = target_dq[i] - current_dq[i];
          
          // Update integral error with anti-windup
@@ -457,8 +478,8 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
        Eigen::VectorXd current_dq = state_input.tail(expected_num_total_joints_);
        
        // Update plant context with current state
-       plant_->SetPositions(plant_context_.get(), robot_instance_, current_q.head(expected_num_arm_joints_));
-       plant_->SetVelocities(plant_context_.get(), robot_instance_, current_dq.head(expected_num_arm_joints_));
+        plant_->SetPositions(plant_context_.get(), robot_instance_, current_q.head(expected_num_total_joints_));
+        plant_->SetVelocities(plant_context_.get(), robot_instance_, current_dq.head(expected_num_total_joints_));
        
        // Get current end-effector pose
        const auto& ee_frame = plant_->GetFrameByName(g_robot_state.ee_frame_name, robot_instance_);
@@ -557,8 +578,8 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
          }
        }
      }
-     // POSITION CONTROL: PID control on position  
-     else if (g_robot_state.has_position_command && commands_active) {
+      // POSITION CONTROL: PID control on position  
+      else if (g_robot_state.has_position_command && commands_active) {
        // POSITION CONTROL: Simple joint impedance control
        // Get current robot state from input
        const auto& state_input = this->get_input_port(state_input_port_).Eval(context);
@@ -568,16 +589,17 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
       // Target positions from FCI commands
       Eigen::VectorXd target_q(expected_num_arm_joints_);
       for (int i = 0; i < expected_num_arm_joints_; ++i) {
-        target_q[i] = g_robot_state.q_cmd[i];
+        // Convert target positions to plant convention
+        target_q[i] = plant_to_franka_sign[i] * g_robot_state.q_cmd[i];
       }
       
       // Optimized impedance values for accurate smooth motion
       // Higher stiffness for better tracking, with matched damping for stability
-      const double stiffness[7] = {150, 150, 150, 150, 80, 60, 50};  // N⋅m/rad
-      const double damping[7] = {40, 40, 40, 40, 25, 20, 16};  // N⋅m⋅s/rad - slightly underdamped for responsiveness
+       const double stiffness[7] = {100, 100, 100, 100, 60, 50, 40};  // N⋅m/rad (less aggressive)
+       const double damping[7] = {35, 35, 35, 35, 22, 18, 14};  // N⋅m⋅s/rad (more damping)
       
       // Integral gains to eliminate steady-state error
-      const double integral_gains[7] = {5.0, 5.0, 5.0, 5.0, 3.0, 2.0, 1.5};  // N⋅m⋅s/rad
+       const double integral_gains[7] = {1.0, 1.0, 1.0, 1.0, 0.6, 0.5, 0.4};  // N⋅m⋅s/rad (lower integral)
       
       // Calculate control torques: τ = K*(q_d - q) + Ki*∫(q_d - q)dt - D*dq
       for (int i = 0; i < expected_num_arm_joints_; ++i) {
@@ -585,7 +607,7 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
         
         // Update integral error with anti-windup
         integral_errors_[i] += position_error * 0.001; // dt = 0.001s
-        const double max_integral = 0.1; // Limit integral contribution
+         const double max_integral = 0.02; // Tighter anti-windup
         integral_errors_[i] = std::max(-max_integral, std::min(max_integral, integral_errors_[i]));
         
         // Limit velocity to reasonable values (safety check)
@@ -593,6 +615,11 @@ class FciImpedanceController final : public drake::systems::LeafSystem<double> {
         const double max_velocity = 2.0; // rad/s
         if (std::abs(limited_velocity) > max_velocity) {
           limited_velocity = (limited_velocity > 0) ? max_velocity : -max_velocity;
+        }
+        // Clamp torques to safe limits
+        const double torque_limits[7] = {87.0, 87.0, 87.0, 87.0, 50.0, 50.0, 40.0};
+        for (int i = 0; i < expected_num_arm_joints_; ++i) {
+          control_torques[i] = std::max(-torque_limits[i], std::min(torque_limits[i], control_torques[i]));
         }
         
         control_torques[i] = stiffness[i] * position_error + 
@@ -687,9 +714,10 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   franka_fci_sim::protocol::RobotState state{};
   
   // Basic joint state
-  state.q = g_robot_state.q;
-  state.dq = g_robot_state.dq_filtered;  // Use filtered velocities for better stability
-  state.tau_J = g_robot_state.tau_J;
+   // Ensure joint sign convention consistent with state publisher
+   state.q = g_robot_state.q;
+   state.dq = g_robot_state.dq_filtered;  // Use filtered velocities for better stability
+   state.tau_J = g_robot_state.tau_J;
   
   // End-effector poses
   state.O_T_EE = g_robot_state.O_T_EE;
@@ -697,13 +725,16 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   state.O_T_EE_c = g_robot_state.O_T_EE_cmd;
   
   // Joint commands - IMPORTANT: q_d should reflect commanded positions if available
-  if (g_robot_state.has_position_command) {
-    state.q_d = g_robot_state.q_cmd;  // Use commanded positions
+   if (g_robot_state.has_position_command) {
+    state.q_d = g_robot_state.q_cmd;  // Use commanded positions (assumed same convention)
   } else {
     state.q_d = g_robot_state.q;      // Use current as desired
   }
   state.dq_d.fill(0.0);               // Zero velocity command
-  state.tau_J_d = g_robot_state.tau_cmd;
+   // Convert commanded torques back to Franka convention for state echo
+   for (int i = 0; i < 7; ++i) {
+     state.tau_J_d[i] = g_robot_state.tau_cmd[i];
+   }
   
   // Set default values for other fields
   state.F_T_EE.fill(0.0);
@@ -723,7 +754,7 @@ franka_fci_sim::protocol::RobotState get_robot_state() {
   state.m_load = 0.0; // No additional load
   
   // Realistic end-effector inertia tensor (6 values: Ixx, Iyy, Izz, Ixy, Ixz, Iyz)
-  // Use detected end effector inertia parameters
+  // Use detected end effector inertia parametersless
   state.I_ee[0] = g_robot_state.ee_inertia[0];  // Ixx
   state.I_ee[1] = g_robot_state.ee_inertia[4];  // Iyy  
   state.I_ee[2] = g_robot_state.ee_inertia[8];  // Izz
@@ -1085,11 +1116,76 @@ int main(int argc, char** argv) {
   auto& root = simulator.get_mutable_context();
   auto& plant_ctx = plant.GetMyMutableContextFromRoot(&root);
   const int n = plant.num_positions(robot);
-  Eigen::VectorXd q_des(n), v_des(plant.num_velocities(robot));
-  q_des << 0.0, -M_PI/4, 0.0, -3*M_PI/4, 0.0, M_PI/2, M_PI/2;
-  v_des.setZero();
+  const int nv = plant.num_velocities(robot);
+  Eigen::VectorXd q_des = Eigen::VectorXd::Zero(n);
+  Eigen::VectorXd v_des = Eigen::VectorXd::Zero(nv);
+  q_des.setZero();
+  // Arm initial configuration (match ROS 2 franka_description defaults)
+  q_des[0] = 0.0;
+  q_des[1] = -M_PI / 4.0;
+  q_des[2] = 0.0;
+  q_des[3] = -3.0 * M_PI / 4.0;
+  q_des[4] = 0.0;
+  q_des[5] = M_PI / 2.0;
+  q_des[6] = -M_PI / 4.0;  // Negative here so reported q7 (+ after sign map) matches ROS 2 default
+  // If gripper joints are present, start opened
+  if (n > 7) {
+    for (int i = 7; i < n; ++i) {
+      q_des[i] = 0.04;  // Open fingers (within [0.0, 0.04])
+    }
+  }
   plant.SetPositions(&plant_ctx, robot, q_des);
   plant.SetVelocities(&plant_ctx, robot, v_des);
+
+  // Seed shared robot state once so initial read() reflects actual configuration
+  {
+    std::lock_guard<std::mutex> lock(g_robot_state.mutex);
+    const std::vector<std::string> joint_names = {
+        "fer_joint1", "fer_joint2", "fer_joint3", "fer_joint4",
+        "fer_joint5", "fer_joint6", "fer_joint7"};
+    static const std::array<double, 7> plant_to_franka_sign{1.0, 1.0, 1.0, 1.0, 1.0, 1.0, -1.0};
+
+    for (int i = 0; i < 7; ++i) {
+      const auto& joint = plant.GetJointByName<drake::multibody::RevoluteJoint>(joint_names[i], robot);
+      const double q_pl = joint.get_angle(plant_ctx);
+      g_robot_state.q[i] = plant_to_franka_sign[i] * q_pl;
+      g_robot_state.dq[i] = 0.0;
+      g_robot_state.dq_filtered[i] = 0.0;
+      g_robot_state.tau_J[i] = 0.0;
+    }
+
+    // Gripper state (if any)
+    if (g_robot_state.has_gripper && g_robot_state.num_gripper_joints > 0) {
+      Eigen::VectorXd q_all = plant.GetPositions(plant_ctx, robot);
+      for (int i = 0; i < g_robot_state.num_gripper_joints; ++i) {
+        const int idx = (g_robot_state.gripper_joint_names[i].find("finger_joint1") != std::string::npos) ? 0 : 1;
+        const int q_index = 7 + i;
+        if (q_index < q_all.size()) {
+          g_robot_state.gripper_q[idx] = q_all[q_index];
+        }
+        g_robot_state.gripper_dq[idx] = 0.0;
+      }
+    }
+
+    // End-effector pose
+    const auto& ee_frame = plant.GetFrameByName(g_robot_state.ee_frame_name, robot);
+    const auto& world_frame = plant.world_frame();
+    const drake::math::RigidTransformd X_W_EE = plant.CalcRelativeTransform(plant_ctx, world_frame, ee_frame);
+    const Eigen::Matrix4d T_matrix = X_W_EE.GetAsMatrix4();
+    for (int col = 0; col < 4; ++col) {
+      for (int row = 0; row < 4; ++row) {
+        g_robot_state.O_T_EE[col * 4 + row] = T_matrix(row, col);
+      }
+    }
+
+    // Elbow configuration
+    g_robot_state.elbow[0] = g_robot_state.q[2];
+    g_robot_state.elbow[1] = (g_robot_state.q[3] < 0) ? 1.0 : -1.0;
+
+    // Mirror commanded state to current for startup consistency
+    g_robot_state.q_cmd = g_robot_state.q;
+    g_robot_state.O_T_EE_cmd = g_robot_state.O_T_EE;
+  }
 
   simulator.Initialize();
 
