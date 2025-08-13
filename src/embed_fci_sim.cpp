@@ -169,6 +169,7 @@ std::pair<int, int> FciSimEmbedder::Impl::DetectEndEffectorConfiguration() {
 void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int num_total_joints) {
   using drake::systems::controllers::InverseDynamics;
   g_comp = builder->AddSystem<InverseDynamics<double>>(plant, InverseDynamics<double>::InverseDynamicsMode::kGravityCompensation);
+  // Gravity comp needs full plant state (includes environment), keep global state connection.
   builder->Connect(plant->get_state_output_port(), g_comp->get_input_port_estimated_state());
 
   // Full-featured impedance/velocity/cartesian/torque controller (parity with app).
@@ -303,19 +304,33 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
 
   auto* ctrl = builder->AddSystem<ImpedanceWrapper>(plant, robot, num_arm_joints, num_total_joints);
   state_input_port_index = ctrl->state_in();
-  builder->Connect(plant->get_state_output_port(), ctrl->get_input_port(state_input_port_index));
+  // Connect only the robot model instance state (positions+velocities) to the controller.
+  builder->Connect(plant->get_state_output_port(robot), ctrl->get_input_port(state_input_port_index));
 
-  // Add torque adder and connect to plant
+  // Add torque adder and connect to plant. Select gravity torques for robot instance only.
   torque_adder = builder->AddSystem<drake::systems::Adder<double>>(2, num_arm_joints);
+
+  const int nv_robot = plant->num_velocities(robot);
+  const int nv_full = plant->num_velocities();
+
+  // First demux: full generalized forces -> [robot, rest]
+  auto* demux_full = builder->AddSystem<drake::systems::Demultiplexer<double>>(std::vector<int>{nv_robot, nv_full - nv_robot});
+  builder->Connect(g_comp->get_output_port(), demux_full->get_input_port());
+
+  drake::systems::OutputPortIndex gravity_arm_port_index;
   if (num_total_joints > num_arm_joints) {
-    auto* selector = builder->AddSystem<drake::systems::Demultiplexer<double>>(std::vector<int>{num_arm_joints, num_total_joints - num_arm_joints});
-    builder->Connect(g_comp->get_output_port(), selector->get_input_port());
-    builder->Connect(selector->get_output_port(0), torque_adder->get_input_port(0));
+    // Second demux: robot block -> [arm, gripper]
+    auto* demux_robot = builder->AddSystem<drake::systems::Demultiplexer<double>>(std::vector<int>{num_arm_joints, nv_robot - num_arm_joints});
+    builder->Connect(demux_full->get_output_port(0), demux_robot->get_input_port());
+    builder->Connect(demux_robot->get_output_port(0), torque_adder->get_input_port(0));
   } else {
-    builder->Connect(g_comp->get_output_port(), torque_adder->get_input_port(0));
+    builder->Connect(demux_full->get_output_port(0), torque_adder->get_input_port(0));
   }
+
   builder->Connect(ctrl->get_output_port(), torque_adder->get_input_port(1));
-  builder->Connect(torque_adder->get_output_port(), plant->get_actuation_input_port());
+
+  // Connect actuation to the robot model instance only.
+  builder->Connect(torque_adder->get_output_port(), plant->get_actuation_input_port(robot));
 
   // State mirror system: periodically mirrors plant state into shared state for server.
   class StateMirror final : public drake::systems::LeafSystem<double> {
@@ -368,7 +383,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
   };
 
   auto* mirror = builder->AddSystem<StateMirror>(plant, robot, num_total_joints);
-  builder->Connect(plant->get_state_output_port(), mirror->get_input_port(0));
+  builder->Connect(plant->get_state_output_port(robot), mirror->get_input_port(0));
 }
 
 protocol::RobotState FciSimEmbedder::Impl::MakeRobotStateSnapshot() {
