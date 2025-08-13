@@ -49,14 +49,7 @@ EmbeddedApp BuildEmbeddedApp(const BuildArgs& args) {
     plant.GetMutableJointByName<RevoluteJoint>(name, robot).set_default_damping(d);
   }
 
-  // Remove proximity roles
-  const drake::geometry::SourceId sid = plant.get_source_id().value();
-  for (drake::multibody::BodyIndex b(0); b < plant.num_bodies(); ++b) {
-    const auto& body = plant.get_body(b);
-    for (const drake::geometry::GeometryId gid : plant.GetCollisionGeometriesForBody(body)) {
-      scene_graph.RemoveRole(sid, gid, drake::geometry::Role::kProximity);
-    }
-  }
+  // Let the embedder handle disabling collisions using SceneGraph.
 
   plant.Finalize();
 
@@ -70,7 +63,8 @@ EmbeddedApp BuildEmbeddedApp(const BuildArgs& args) {
   FciSimOptions opts;
   opts.headless = (args.mode != RunMode::Visual);
   opts.turbo = (args.mode == RunMode::Turbo);
-  auto embed = FciSimEmbedder::Attach(&plant, robot, &builder, opts);
+  // Disable collisions via Attach overload with SceneGraph (default true)
+  auto embed = FciSimEmbedder::Attach(&plant, robot, &scene_graph, &builder, opts, true);
 
   auto diagram = builder.Build();
   auto simulator = std::make_unique<drake::systems::Simulator<double>>(*diagram);

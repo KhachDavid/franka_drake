@@ -214,10 +214,10 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         out->SetFromVector(tau);
         return;
       }
-      // VELOCITY CONTROL
+      // VELOCITY CONTROL (slightly lower gains to reduce chatter with client PI)
       else if (st.has_velocity_command && commands_active) {
-        const double Kp[7] = {40,40,40,40,25,20,18};
-        const double Ki[7] = {4,4,4,4,2.5,2.0,1.8};
+        const double Kp[7] = {30,30,30,30,20,16,14};
+        const double Ki[7] = {3,3,3,3,2.0,1.6,1.4};
         for (int i = 0; i < arm_joints_; ++i) {
           double e = st.dq_cmd[i] - dq[i];
           velocity_integral_errors_[i] = std::clamp(velocity_integral_errors_[i] + e * 0.001, -0.5, 0.5);
@@ -257,8 +257,8 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // POSITION CONTROL (only when we have active position commands)
       else if (st.has_position_command && commands_active) {
-        const double K[7] = {60,60,60,60,40,30,25};
-        const double D[7] = {18,18,18,18,12,10,8};
+        const double K[7] = {55,55,55,55,38,28,24};
+        const double D[7] = {20,20,20,20,14,12,10};
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
         for (int i = 0; i < arm_joints_; ++i) {
           double qd = plant_to_franka_sign[i] * st.q_cmd[i];
@@ -371,7 +371,7 @@ protocol::RobotState FciSimEmbedder::Impl::MakeRobotStateSnapshot() {
   std::lock_guard<std::mutex> lock(st.mutex);
   protocol::RobotState rs{};
   rs.q = st.q;
-  rs.dq = st.dq_filtered;
+  rs.dq = st.dq;  // Use raw velocities to reduce double-filter lag with client-side filters
   rs.tau_J = st.tau_J;
   rs.O_T_EE = st.O_T_EE;
   rs.O_T_EE_d = st.O_T_EE;
@@ -429,6 +429,29 @@ std::unique_ptr<FciSimEmbedder> FciSimEmbedder::Attach(
     const FciSimOptions& options) {
   auto handle = std::unique_ptr<FciSimEmbedder>(new FciSimEmbedder(plant, robot_instance, builder, options));
   handle->ConfigureSystems();
+  return handle;
+}
+
+std::unique_ptr<FciSimEmbedder> FciSimEmbedder::Attach(
+    const drake::multibody::MultibodyPlant<double>* plant,
+    const drake::multibody::ModelInstanceIndex& robot_instance,
+    drake::geometry::SceneGraph<double>* scene_graph,
+    drake::systems::DiagramBuilder<double>* builder,
+    const FciSimOptions& options,
+    bool disable_collisions) {
+  auto handle = Attach(plant, robot_instance, builder, options);
+  if (scene_graph != nullptr && disable_collisions) {
+    try {
+      const drake::geometry::SourceId sid = plant->get_source_id().value();
+      for (drake::multibody::BodyIndex b(0); b < plant->num_bodies(); ++b) {
+        const auto& body = plant->get_body(b);
+        for (const drake::geometry::GeometryId gid : plant->GetCollisionGeometriesForBody(body)) {
+          scene_graph->RemoveRole(sid, gid, drake::geometry::Role::kProximity);
+        }
+      }
+    } catch (const std::exception&) {
+    }
+  }
   return handle;
 }
 
@@ -583,6 +606,95 @@ std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
     drake::multibody::MultibodyPlant<double>* plant,
     drake::systems::DiagramBuilder<double>* builder) {
   return AutoAttach(plant, builder, AutoAttachOptions{}, FciSimOptions{});
+}
+
+std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
+    drake::multibody::MultibodyPlant<double>* plant,
+    drake::geometry::SceneGraph<double>* scene_graph,
+    drake::systems::DiagramBuilder<double>* builder,
+    AutoAttachOptions auto_options,
+    FciSimOptions options) {
+  // Reuse core attach logic first.
+  auto handle = AutoAttach(plant, builder, auto_options, options);
+
+  // Optionally strip proximity roles to disable collisions, mirroring server main.
+  if (scene_graph != nullptr && auto_options.disable_collisions) {
+    try {
+      const drake::geometry::SourceId sid = plant->get_source_id().value();
+      for (drake::multibody::BodyIndex b(0); b < plant->num_bodies(); ++b) {
+        const auto& body = plant->get_body(b);
+        for (const drake::geometry::GeometryId gid : plant->GetCollisionGeometriesForBody(body)) {
+          scene_graph->RemoveRole(sid, gid, drake::geometry::Role::kProximity);
+        }
+      }
+    } catch (const std::exception&) {
+      // Best-effort; ignore if roles cannot be removed.
+    }
+  }
+
+  return handle;
+}
+
+void SetDefaultFrankaInitialState(drake::multibody::MultibodyPlant<double>& plant,
+                                  drake::systems::Context<double>& plant_context) {
+  // Determine model instance if single-model plant; otherwise apply to all instances that
+  // expose the expected Franka joint names. We use the plant-wide APIs that accept instance.
+  const int n_positions = plant.num_positions();
+  const int n_velocities = plant.num_velocities();
+  Eigen::VectorXd q_des = Eigen::VectorXd::Zero(n_positions);
+  Eigen::VectorXd v_des = Eigen::VectorXd::Zero(n_velocities);
+
+  // Best-effort: locate a model instance by probing a known joint name
+  drake::multibody::ModelInstanceIndex instance;
+  bool found = false;
+  try {
+    for (drake::multibody::JointIndex j(0); j < plant.num_joints(); ++j) {
+      const auto& joint = plant.get_joint(j);
+      if (joint.name() == std::string("fer_joint1")) {
+        instance = joint.model_instance();
+        found = true;
+        break;
+      }
+    }
+  } catch (const std::exception&) {
+  }
+
+  if (found) {
+    const int n = plant.num_positions(instance);
+    const int nv = plant.num_velocities(instance);
+    Eigen::VectorXd qi = Eigen::VectorXd::Zero(n);
+    Eigen::VectorXd vi = Eigen::VectorXd::Zero(nv);
+    if (n >= 7) {
+      qi[0] = 0.0;
+      qi[1] = -M_PI / 4.0;
+      qi[2] = 0.0;
+      qi[3] = -3.0 * M_PI / 4.0;
+      qi[4] = 0.0;
+      qi[5] = M_PI / 2.0;
+      qi[6] = M_PI / 4.0;
+    }
+    if (n > 7) {
+      for (int i = 7; i < n; ++i) qi[i] = 0.04; // open gripper if present
+    }
+    plant.SetPositions(&plant_context, instance, qi);
+    plant.SetVelocities(&plant_context, instance, vi);
+  } else {
+    // Fallback: apply to whole-plant vectors if instance not found
+    if (n_positions >= 7) {
+      q_des[0] = 0.0;
+      q_des[1] = -M_PI / 4.0;
+      q_des[2] = 0.0;
+      q_des[3] = -3.0 * M_PI / 4.0;
+      q_des[4] = 0.0;
+      q_des[5] = M_PI / 2.0;
+      q_des[6] = M_PI / 4.0;
+    }
+    if (n_positions > 7) {
+      for (int i = 7; i < n_positions; ++i) q_des[i] = 0.04;
+    }
+    plant.SetPositions(&plant_context, q_des);
+    plant.SetVelocities(&plant_context, v_des);
+  }
 }
 
 }  // namespace franka_fci_sim

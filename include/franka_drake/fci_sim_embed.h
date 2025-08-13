@@ -5,6 +5,7 @@
 #include <string>
 
 #include <drake/multibody/plant/multibody_plant.h>
+#include <drake/geometry/scene_graph.h>
 #include <drake/systems/framework/diagram_builder.h>
 #include <drake/systems/analysis/simulator.h>
 
@@ -57,6 +58,16 @@ class FciSimEmbedder {
       drake::systems::DiagramBuilder<double>* builder,
       const FciSimOptions& options = {});
 
+  // Overload: also pass SceneGraph so this call can optionally disable
+  // collisions by removing proximity roles immediately after wiring.
+  static std::unique_ptr<FciSimEmbedder> Attach(
+      const drake::multibody::MultibodyPlant<double>* plant,
+      const drake::multibody::ModelInstanceIndex& robot_instance,
+      drake::geometry::SceneGraph<double>* scene_graph,
+      drake::systems::DiagramBuilder<double>* builder,
+      const FciSimOptions& options = {},
+      bool disable_collisions = true);
+
   // Attach and auto-configure convenience: modifies the provided plant so the
   // caller doesn't need to add actuators/damping/welds manually. If a Franka
   // model instance is not found in the plant, a default model is added from
@@ -69,6 +80,10 @@ class FciSimEmbedder {
     // Optional explicit URDF path override. If empty, uses a built-in default
     // based on prefer_gripper.
     std::string urdf_path_override;
+    // When true, remove proximity roles (disable collisions) for all robot
+    // bodies during AutoAttach if a SceneGraph pointer is provided (see
+    // overload below). Defaults to true to mirror server behavior.
+    bool disable_collisions = true;
   };
 
   // Finds or adds a Franka model instance in the plant, applies default
@@ -76,6 +91,16 @@ class FciSimEmbedder {
   // needed, and attaches the FCI systems. Returns the embedder handle.
   static std::unique_ptr<FciSimEmbedder> AutoAttach(
       drake::multibody::MultibodyPlant<double>* plant,
+      drake::systems::DiagramBuilder<double>* builder,
+      AutoAttachOptions auto_options,
+      FciSimOptions options);
+
+  // Overload: also pass SceneGraph so AutoAttach can disable collisions.
+  // If scene_graph is non-null and auto_options.disable_collisions is true,
+  // all proximity roles attached to the plant's bodies will be removed.
+  static std::unique_ptr<FciSimEmbedder> AutoAttach(
+      drake::multibody::MultibodyPlant<double>* plant,
+      drake::geometry::SceneGraph<double>* scene_graph,
       drake::systems::DiagramBuilder<double>* builder,
       AutoAttachOptions auto_options,
       FciSimOptions options);
@@ -141,6 +166,12 @@ EmbeddedApp BuildEmbeddedApp(const BuildArgs& args);
 
 // Utility: run a real-time loop (or turbo) with a small sleep when not turbo.
 void RunRealtimeLoop(drake::systems::Simulator<double>& simulator, bool turbo);
+
+  // Utility: set a sensible default initial joint configuration (q) and
+  // zero velocities (v) on the provided plant/context. Matches the server
+  // main defaults (ROS 2 franka_description style pose, open gripper if any).
+  void SetDefaultFrankaInitialState(drake::multibody::MultibodyPlant<double>& plant,
+                                    drake::systems::Context<double>& plant_context);
 
 }  // namespace franka_fci_sim
 
