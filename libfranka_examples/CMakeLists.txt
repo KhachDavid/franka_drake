@@ -31,6 +31,7 @@ add_franka_example(cartesian_trajectory_following)
 add_franka_example(spline_trajectory)
 add_franka_example(simple_joint_motion_test)
 add_franka_example(force_control_simple)
+add_franka_example(warehouse_picking)
 
 # Install targets
 install(TARGETS 
@@ -46,5 +47,6 @@ install(TARGETS
   cartesian_trajectory_following
   spline_trajectory
   simple_joint_motion_test
+  warehouse_picking
   DESTINATION bin
 )
