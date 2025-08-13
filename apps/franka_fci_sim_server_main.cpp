@@ -1,4 +1,5 @@
 #include "franka_drake/fci_sim_server.h"
+#include "franka_drake/fci_sim_embed.h"
 #include <drake/common/find_resource.h>
 #include <drake/geometry/scene_graph.h>
 #include <drake/multibody/parsing/parser.h>
@@ -988,8 +989,8 @@ int main(int argc, char** argv) {
     std::cerr << "  turbo: 'turbo' to run faster than real-time (no 1:1 real-time constraint)\n";
     return 1;
   }
-  const std::string  package_xml = argv[1];
-  const std::string  urdf        = argv[2];
+  const std::string  package_xml = franka_fci_sim::ResolveModelPath(argv[1]);
+  const std::string  urdf        = franka_fci_sim::ResolveModelPath(argv[2]);
   const double       dt          = std::stod(argv[3]);
   const bool         headless    = (argc >= 5 && std::string(argv[4]) == "true");
 

@@ -21,6 +21,11 @@
 #include <drake/systems/primitives/adder.h>
 #include <drake/systems/primitives/demultiplexer.h>
 #include <drake/systems/primitives/vector_log_sink.h>
+#include <drake/multibody/plant/multibody_plant.h>
+#include <drake/geometry/scene_graph.h>
+#include <drake/systems/framework/diagram_builder.h>
+#include <cstdlib>
+#include <filesystem>
 
 #include "franka_drake/fci_sim_server.h"
 // Using in-file impedance wrapper for parity with server main
@@ -526,10 +531,12 @@ std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
     if (plant->is_finalized()) {
       throw std::runtime_error("FciSimEmbedder::AutoAttach: plant is already finalized and no Franka model was found. Provide a mutable, non-finalized plant or pre-load the model.");
     }
-    const std::string pkg_xml = auto_options.package_xml_path.empty() ? std::string("models/urdf/package.xml") : auto_options.package_xml_path;
-    const std::string urdf = !auto_options.urdf_path_override.empty() ? auto_options.urdf_path_override
+    const std::string pkg_xml_in = auto_options.package_xml_path.empty() ? std::string("models/urdf/package.xml") : auto_options.package_xml_path;
+    const std::string urdf_in = !auto_options.urdf_path_override.empty() ? auto_options.urdf_path_override
                                 : (auto_options.prefer_gripper ? std::string("models/urdf/fer_drake_gripper_fixed.urdf")
                                                                : std::string("models/urdf/fer_drake_fingerless.urdf"));
+    const std::string pkg_xml = ResolveModelPath(pkg_xml_in);
+    const std::string urdf = ResolveModelPath(urdf_in);
     drake::multibody::Parser parser(plant);
     parser.package_map().AddPackageXml(pkg_xml);
     const auto added = parser.AddModels(urdf);
@@ -695,6 +702,65 @@ void SetDefaultFrankaInitialState(drake::multibody::MultibodyPlant<double>& plan
     plant.SetPositions(&plant_context, q_des);
     plant.SetVelocities(&plant_context, v_des);
   }
+}
+
+auto AutoBuildAndAttach(drake::systems::DiagramBuilder<double>* builder,
+                        double time_step,
+                        FciSimEmbedder::AutoAttachOptions auto_options,
+                        FciSimOptions options) -> AutoBuildResult {
+  using drake::multibody::AddMultibodyPlantSceneGraph;
+  auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(builder, time_step);
+  auto embedder = FciSimEmbedder::AutoAttach(&plant, &scene_graph, builder, auto_options, options);
+  return AutoBuildResult{&plant, &scene_graph, std::move(embedder)};
+}
+
+std::string ResolveModelPath(const std::string& relative_or_absolute) {
+  namespace fs = std::filesystem;
+  // Absolute path and exists
+  if (fs::path(relative_or_absolute).is_absolute() && fs::exists(relative_or_absolute)) {
+    return relative_or_absolute;
+  }
+
+  // Env overrides
+  const char* models_env = std::getenv("FRANKA_DRAKE_MODELS_DIR");
+  const char* root_env = std::getenv("FRANKA_DRAKE_ROOT");
+
+  auto try_path = [](const fs::path& p) -> std::optional<std::string> {
+    if (!p.empty() && fs::exists(p)) return p.string();
+    return std::nullopt;
+  };
+
+  // If starts with models/, try $FRANKA_DRAKE_MODELS_DIR first
+  if (relative_or_absolute.rfind("models/", 0) == 0 && models_env) {
+    if (auto ok = try_path(fs::path(models_env) / fs::path(relative_or_absolute).lexically_relative("models")); ok) {
+      return *ok;
+    }
+  }
+
+  // Try FRANKA_DRAKE_ROOT
+  if (root_env) {
+    if (auto ok = try_path(fs::path(root_env) / relative_or_absolute); ok) return *ok;
+  }
+
+  // Try CWD
+  if (auto ok = try_path(fs::current_path() / relative_or_absolute); ok) return *ok;
+
+  // Try alongside executable
+  // Get /proc/self/exe on Linux
+  char exe_buf[4096] = {0};
+  ssize_t len = ::readlink("/proc/self/exe", exe_buf, sizeof(exe_buf)-1);
+  fs::path exe_dir;
+  if (len > 0) {
+    exe_buf[len] = '\0';
+    exe_dir = fs::path(exe_buf).parent_path();
+  }
+  if (!exe_dir.empty()) {
+    if (auto ok = try_path(exe_dir / relative_or_absolute); ok) return *ok;
+    if (auto ok = try_path(exe_dir / ".." / relative_or_absolute); ok) return *ok;
+    if (auto ok = try_path(exe_dir / ".." / ".." / relative_or_absolute); ok) return *ok;
+  }
+
+  return relative_or_absolute;  // best effort fallback
 }
 
 }  // namespace franka_fci_sim

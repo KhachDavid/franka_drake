@@ -31,8 +31,10 @@ EmbeddedApp BuildEmbeddedApp(const BuildArgs& args) {
   DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, args.time_step);
   Parser parser(&plant, &scene_graph);
-  parser.package_map().AddPackageXml(args.package_xml_path);
-  const auto robot = parser.AddModels(SelectUrdf(args.config))[0];
+  const std::string pkg_xml = ResolveModelPath(args.package_xml_path);
+  const std::string urdf_path = ResolveModelPath(SelectUrdf(args.config));
+  parser.package_map().AddPackageXml(pkg_xml);
+  const auto robot = parser.AddModels(urdf_path)[0];
   plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("base", robot));
 
   struct J { const char* n; double eff; };

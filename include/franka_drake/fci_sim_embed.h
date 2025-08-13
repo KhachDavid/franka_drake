@@ -173,6 +173,32 @@ void RunRealtimeLoop(drake::systems::Simulator<double>& simulator, bool turbo);
   void SetDefaultFrankaInitialState(drake::multibody::MultibodyPlant<double>& plant,
                                     drake::systems::Context<double>& plant_context);
 
+  // Convenience: build a new plant+scene_graph with the requested time_step,
+  // then AutoAttach with the given options in one call. Returns the created
+  // plant/scene_graph (owned by the provided builder) and the embedder handle.
+  struct AutoBuildResult {
+    drake::multibody::MultibodyPlant<double>* plant;
+    drake::geometry::SceneGraph<double>* scene_graph;
+    std::unique_ptr<FciSimEmbedder> embedder;
+  };
+
+  AutoBuildResult AutoBuildAndAttach(drake::systems::DiagramBuilder<double>* builder,
+                                     double time_step,
+                                     FciSimEmbedder::AutoAttachOptions auto_options,
+                                     FciSimOptions options);
+
+  // Resolve a model/resource path so examples can run from any working
+  // directory. If the input is absolute and exists, returns it. Otherwise
+  // tries the following in order and returns the first existing path:
+  // - $FRANKA_DRAKE_MODELS_DIR when input starts with "models/"
+  // - $FRANKA_DRAKE_ROOT/<input>
+  // - CWD/<input>
+  // - <exe_dir>/<input>
+  // - <exe_dir>/../<input>
+  // - <exe_dir>/../../franka_drake/<input>
+  // If nothing exists, returns the input unchanged.
+  std::string ResolveModelPath(const std::string& relative_or_absolute);
+
 }  // namespace franka_fci_sim
 
 
