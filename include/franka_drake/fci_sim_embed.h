@@ -57,6 +57,34 @@ class FciSimEmbedder {
       drake::systems::DiagramBuilder<double>* builder,
       const FciSimOptions& options = {});
 
+  // Attach and auto-configure convenience: modifies the provided plant so the
+  // caller doesn't need to add actuators/damping/welds manually. If a Franka
+  // model instance is not found in the plant, a default model is added from
+  // the built-in URDFs (fingerless by default, or gripper if preferred).
+  struct AutoAttachOptions {
+    // Prefer gripper configuration when adding a default model.
+    bool prefer_gripper = false;
+    // Optional package.xml path. If empty, uses "models/urdf/package.xml".
+    std::string package_xml_path;
+    // Optional explicit URDF path override. If empty, uses a built-in default
+    // based on prefer_gripper.
+    std::string urdf_path_override;
+  };
+
+  // Finds or adds a Franka model instance in the plant, applies default
+  // configuration (actuators, damping, base weld), finalizes the plant if
+  // needed, and attaches the FCI systems. Returns the embedder handle.
+  static std::unique_ptr<FciSimEmbedder> AutoAttach(
+      drake::multibody::MultibodyPlant<double>* plant,
+      drake::systems::DiagramBuilder<double>* builder,
+      AutoAttachOptions auto_options,
+      FciSimOptions options);
+
+  // Convenience overload with all defaults.
+  static std::unique_ptr<FciSimEmbedder> AutoAttach(
+      drake::multibody::MultibodyPlant<double>* plant,
+      drake::systems::DiagramBuilder<double>* builder);
+
   // Non-copyable, non-movable (holds internal system pointers owned by builder)
   FciSimEmbedder(const FciSimEmbedder&) = delete;
   FciSimEmbedder& operator=(const FciSimEmbedder&) = delete;

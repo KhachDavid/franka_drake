@@ -197,12 +197,18 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
 
       // TORQUE CONTROL: pass-through minus gravity
       if (st.has_torque_command) {
+        // Match app behavior: subtract gravity, clamp to high limits, and return early (no rate limit)
         Eigen::VectorXd tau_g = plant_->CalcGravityGeneralizedForces(*plant_context_);
+        static const std::array<double, 7> high_limits{87.0,87.0,87.0,87.0,50.0,50.0,40.0};
         for (int i = 0; i < arm_joints_; ++i) {
-          tau[i] = st.tau_cmd[i] - tau_g[i];
+          double t = st.tau_cmd[i] - tau_g[i];
+          t = std::clamp(t, -high_limits[i], high_limits[i]);
+          tau[i] = t;
         }
         integral_errors_.setZero();
         velocity_integral_errors_.setZero();
+        out->SetFromVector(tau);
+        return;
       }
       // VELOCITY CONTROL
       else if (st.has_velocity_command && (std::chrono::duration<double>(std::chrono::steady_clock::now() - st.last_command_time).count() < 0.1)) {
@@ -249,15 +255,18 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       else {
         const double K[7] = {60,60,60,60,40,30,25};
         const double D[7] = {18,18,18,18,12,10,8};
+        // Sign mapping consistent with app (currently all +1, but keep for parity)
+        static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
         for (int i = 0; i < arm_joints_; ++i) {
-          double e = st.q_cmd[i] - q[i];
+          double qd = plant_to_franka_sign[i] * st.q_cmd[i];
+          double e = qd - q[i];
           double v = dq[i];
           // No integral by default for stability
           tau[i] = K[i] * e - D[i] * v;
         }
       }
 
-      // Torque clamp and rate limit
+      // Torque clamp and rate limit (not applied in torque mode due to early return)
       for (int i = 0; i < arm_joints_; ++i) {
         double t = std::clamp(tau[i], -torque_limits[i], torque_limits[i]);
         double delta = t - last_tau[i];
@@ -455,6 +464,118 @@ void FciSimEmbedder::SetModeChangeHandler(FrankaFciSimServer::ModeChangeHandler 
   if (impl_->server) {
     impl_->server->set_mode_change_handler(std::move(handler));
   }
+}
+
+std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
+    drake::multibody::MultibodyPlant<double>* plant,
+    drake::systems::DiagramBuilder<double>* builder,
+    AutoAttachOptions auto_options,
+    FciSimOptions options) {
+  using drake::multibody::ModelInstanceIndex;
+  using drake::multibody::RevoluteJoint;
+
+  // 1) Try to find an existing Franka model instance by probing for a known joint.
+  ModelInstanceIndex robot_instance;
+  bool found = false;
+  // Drake doesn't expose a single call for all instance indices in older versions;
+  // iterate over all joints and record the instance when we first see a known joint.
+  try {
+    for (drake::multibody::JointIndex j(0); j < plant->num_joints(); ++j) {
+      const auto& joint = plant->get_joint(j);
+      if (joint.name() == std::string("fer_joint1")) {
+        robot_instance = joint.model_instance();
+        found = true;
+        break;
+      }
+    }
+  } catch (const std::exception&) {
+  }
+
+  // 2) If not found, add a default model to the plant.
+  if (!found) {
+    if (plant->is_finalized()) {
+      throw std::runtime_error("FciSimEmbedder::AutoAttach: plant is already finalized and no Franka model was found. Provide a mutable, non-finalized plant or pre-load the model.");
+    }
+    const std::string pkg_xml = auto_options.package_xml_path.empty() ? std::string("models/urdf/package.xml") : auto_options.package_xml_path;
+    const std::string urdf = !auto_options.urdf_path_override.empty() ? auto_options.urdf_path_override
+                                : (auto_options.prefer_gripper ? std::string("models/urdf/fer_drake_gripper_fixed.urdf")
+                                                               : std::string("models/urdf/fer_drake_fingerless.urdf"));
+    drake::multibody::Parser parser(plant);
+    parser.package_map().AddPackageXml(pkg_xml);
+    const auto added = parser.AddModels(urdf);
+    if (added.empty()) {
+      throw std::runtime_error("FciSimEmbedder::AutoAttach: failed to add default Franka model from URDF: " + urdf);
+    }
+    robot_instance = added[0];
+
+    // Weld base to world if present.
+    try {
+      plant->WeldFrames(plant->world_frame(), plant->GetFrameByName("base", robot_instance));
+    } catch (const std::exception&) {
+      // If base frame isn't found, leave as-is; user may have already constrained it.
+    }
+
+    // Add simple actuators for the 7 arm joints so we can apply torques.
+    struct J { const char* n; double eff; };
+    const std::vector<J> act = {{"fer_joint1",87},{"fer_joint2",87},{"fer_joint3",87},
+                                {"fer_joint4",87},{"fer_joint5",12},{"fer_joint6",87},{"fer_joint7",87}};
+    for (const auto& a : act) {
+      try {
+        const auto& joint = plant->GetJointByName<RevoluteJoint>(a.n, robot_instance);
+        plant->AddJointActuator(std::string(a.n) + "_act", joint, a.eff);
+      } catch (const std::exception&) {
+        // Skip if joint missing (e.g., variant models) — minimal actuation may already exist.
+      }
+    }
+
+    // Set light default damping to all known arm joints.
+    const std::vector<std::pair<const char*, double>> damp = {{"fer_joint1",1.0},{"fer_joint2",1.0},{"fer_joint3",1.0},
+                                                              {"fer_joint4",1.0},{"fer_joint5",1.0},{"fer_joint6",1.0},{"fer_joint7",1.0}};
+    for (const auto& [name, d] : damp) {
+      try {
+        plant->GetMutableJointByName<RevoluteJoint>(name, robot_instance).set_default_damping(d);
+      } catch (const std::exception&) {
+      }
+    }
+
+    // Finalize plant after modifications.
+    plant->Finalize();
+  } else {
+    // If found and not finalized, ensure required actuators exist; otherwise leave as-is.
+    if (!plant->is_finalized()) {
+      struct J { const char* n; double eff; };
+      const std::vector<J> act = {{"fer_joint1",87},{"fer_joint2",87},{"fer_joint3",87},
+                                  {"fer_joint4",87},{"fer_joint5",12},{"fer_joint6",87},{"fer_joint7",87}};
+      for (const auto& a : act) {
+        try {
+          const auto& joint = plant->GetJointByName<RevoluteJoint>(a.n, robot_instance);
+          plant->AddJointActuator(std::string(a.n) + "_act", joint, a.eff);
+        } catch (const std::exception&) {
+        }
+      }
+      const std::vector<std::pair<const char*, double>> damp = {{"fer_joint1",1.0},{"fer_joint2",1.0},{"fer_joint3",1.0},
+                                                                {"fer_joint4",1.0},{"fer_joint5",1.0},{"fer_joint6",1.0},{"fer_joint7",1.0}};
+      for (const auto& [name, d] : damp) {
+        try {
+          plant->GetMutableJointByName<RevoluteJoint>(name, robot_instance).set_default_damping(d);
+        } catch (const std::exception&) {
+        }
+      }
+      // Weld base if not already constrained.
+      try {
+        plant->WeldFrames(plant->world_frame(), plant->GetFrameByName("base", robot_instance));
+      } catch (const std::exception&) {}
+      plant->Finalize();
+    }
+  }
+
+  return FciSimEmbedder::Attach(plant, robot_instance, builder, options);
+}
+
+std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
+    drake::multibody::MultibodyPlant<double>* plant,
+    drake::systems::DiagramBuilder<double>* builder) {
+  return AutoAttach(plant, builder, AutoAttachOptions{}, FciSimOptions{});
 }
 
 }  // namespace franka_fci_sim
