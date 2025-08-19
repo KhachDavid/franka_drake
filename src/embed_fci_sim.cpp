@@ -12,6 +12,8 @@
 #include <vector>
 
 #include <drake/geometry/scene_graph.h>
+#include <drake/geometry/collision_filter_manager.h>
+#include <drake/geometry/geometry_set.h>
 #include <drake/math/rigid_transform.h>
 #include <drake/multibody/parsing/parser.h>
 #include <drake/multibody/plant/multibody_plant.h>
@@ -80,6 +82,28 @@ SharedRobotState& GetSharedState() {
 }
 
 }  // namespace
+
+// Apply a collision filter that disables robot self-collisions while keeping
+// collisions with the environment enabled. This constructs a GeometrySet of all
+// collision geometries belonging to the given robot model instance and excludes
+// collisions within that set.
+static void ApplyRobotSelfCollisionFilter(const drake::multibody::MultibodyPlant<double>* plant,
+                                          const drake::multibody::ModelInstanceIndex& robot,
+                                          drake::geometry::SceneGraph<double>* scene_graph) {
+  if (plant == nullptr || scene_graph == nullptr) return;
+  drake::geometry::GeometrySet robot_geometries;
+  for (drake::multibody::BodyIndex b(0); b < plant->num_bodies(); ++b) {
+    const auto& body = plant->get_body(b);
+    if (body.model_instance() != robot) continue;
+    for (const drake::geometry::GeometryId gid : plant->GetCollisionGeometriesForBody(body)) {
+      robot_geometries.Add(gid);
+    }
+  }
+  auto manager = scene_graph->collision_filter_manager();
+  drake::geometry::CollisionFilterDeclaration decl;
+  decl.ExcludeWithin(robot_geometries);
+  manager.Apply(decl);
+}
 
 struct FciSimEmbedder::Impl {
   Impl(const drake::multibody::MultibodyPlant<double>* p,
@@ -461,16 +485,8 @@ std::unique_ptr<FciSimEmbedder> FciSimEmbedder::Attach(
     bool disable_collisions) {
   auto handle = Attach(plant, robot_instance, builder, options);
   if (scene_graph != nullptr && disable_collisions) {
-    try {
-      const drake::geometry::SourceId sid = plant->get_source_id().value();
-      for (drake::multibody::BodyIndex b(0); b < plant->num_bodies(); ++b) {
-        const auto& body = plant->get_body(b);
-        for (const drake::geometry::GeometryId gid : plant->GetCollisionGeometriesForBody(body)) {
-          scene_graph->RemoveRole(sid, gid, drake::geometry::Role::kProximity);
-        }
-      }
-    } catch (const std::exception&) {
-    }
+    // Replace full proximity removal with self-collision filtering only.
+    ApplyRobotSelfCollisionFilter(plant, robot_instance, scene_graph);
   }
   return handle;
 }
@@ -639,19 +655,9 @@ std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
   // Reuse core attach logic first.
   auto handle = AutoAttach(plant, builder, auto_options, options);
 
-  // Optionally strip proximity roles to disable collisions, mirroring server main.
+  // Optionally apply self-collision filtering (keep environment collisions).
   if (scene_graph != nullptr && auto_options.disable_collisions) {
-    try {
-      const drake::geometry::SourceId sid = plant->get_source_id().value();
-      for (drake::multibody::BodyIndex b(0); b < plant->num_bodies(); ++b) {
-        const auto& body = plant->get_body(b);
-        for (const drake::geometry::GeometryId gid : plant->GetCollisionGeometriesForBody(body)) {
-          scene_graph->RemoveRole(sid, gid, drake::geometry::Role::kProximity);
-        }
-      }
-    } catch (const std::exception&) {
-      // Best-effort; ignore if roles cannot be removed.
-    }
+    ApplyRobotSelfCollisionFilter(plant, handle->impl_->robot, scene_graph);
   }
 
   return handle;

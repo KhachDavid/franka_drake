@@ -72,15 +72,20 @@ FrankaDrakeModule::FrankaDrakeModule(drake::systems::DiagramBuilder<double>* bui
     plant_->GetMutableJointByName<drake::multibody::RevoluteJoint>(name, robot).set_default_damping(d);
   }
 
-  // Disable collisions by stripping proximity roles
+  // Disable robot self-collisions while keeping collisions with environment
+  // using SceneGraph's collision filter manager.
   {
-    const auto sid = plant_->get_source_id().value();
+    drake::geometry::GeometrySet robot_set;
     for (drake::multibody::BodyIndex b(0); b < plant_->num_bodies(); ++b) {
       const auto& body = plant_->get_body(b);
       for (const auto gid : plant_->GetCollisionGeometriesForBody(body)) {
-        scene_graph_->RemoveRole(sid, gid, drake::geometry::Role::kProximity);
+        robot_set.Add(gid);
       }
     }
+    auto cfm = scene_graph_->collision_filter_manager();
+    drake::geometry::CollisionFilterDeclaration decl;
+    decl.ExcludeWithin(robot_set);
+    cfm.Apply(decl);
   }
 
   plant_->Finalize();
