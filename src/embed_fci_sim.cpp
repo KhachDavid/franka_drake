@@ -18,6 +18,7 @@
 #include <drake/multibody/parsing/parser.h>
 #include <drake/multibody/plant/multibody_plant.h>
 #include <drake/multibody/tree/revolute_joint.h>
+#include <drake/multibody/tree/prismatic_joint.h>
 #include <drake/systems/controllers/inverse_dynamics.h>
 #include <drake/systems/framework/leaf_system.h>
 #include <drake/systems/primitives/adder.h>
@@ -74,6 +75,16 @@ struct SharedRobotState {
   std::array<double, 2> gripper_dq{0.0, 0.0};
   std::array<std::string, 2> gripper_joint_names{"", ""};
   int num_gripper_joints = 0;
+  // Gripper control
+  bool gripper_registered = false;
+  bool gripper_target_user_set = false;
+  double gripper_min_width = 0.0;
+  double gripper_max_width = 0.08;
+  double gripper_kp = 200.0;
+  double gripper_kd = 5.0;
+  double gripper_left_sign = 1.0;
+  double gripper_right_sign = 1.0;
+  double gripper_target_width = 0.08;
 };
 
 SharedRobotState& GetSharedState() {
@@ -121,6 +132,8 @@ struct FciSimEmbedder::Impl {
   drake::systems::controllers::InverseDynamics<double>* g_comp = nullptr;
   drake::systems::Adder<double>* torque_adder = nullptr;
   int state_input_port_index = -1;
+  int num_arm_joints_cached = 7;
+  int num_total_joints_cached = 7;
 
   // Networking server
   std::unique_ptr<FrankaFciSimServer> server;
@@ -202,10 +215,10 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
    public:
     explicit ImpedanceWrapper(const drake::multibody::MultibodyPlant<double>* plant,
                               drake::multibody::ModelInstanceIndex robot,
-                              int arm_joints, int total_joints)
-        : plant_(plant), robot_(robot), arm_joints_(arm_joints), total_joints_(total_joints) {
+                              int arm_joints, int total_joints, int nu_robot)
+        : plant_(plant), robot_(robot), arm_joints_(arm_joints), total_joints_(total_joints), nu_robot_(nu_robot) {
       state_in_ = this->DeclareVectorInputPort("robot_state", drake::systems::BasicVector<double>(2 * total_joints_)).get_index();
-      this->DeclareVectorOutputPort("control_torques", drake::systems::BasicVector<double>(arm_joints_),
+      this->DeclareVectorOutputPort("control_torques", drake::systems::BasicVector<double>(nu_robot_),
                                     &ImpedanceWrapper::CalcTorques);
       plant_context_ = plant_->CreateDefaultContext();
       integral_errors_ = Eigen::VectorXd::Zero(arm_joints_);
@@ -314,25 +327,51 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         last_tau[i] = t;
       }
 
-      out->SetFromVector(tau);
+      // Compose output vector of size nu_robot_: arm torques + optional gripper torques
+      Eigen::VectorXd tau_out = Eigen::VectorXd::Zero(nu_robot_);
+      for (int i = 0; i < std::min(arm_joints_, nu_robot_); ++i) tau_out[i] = tau[i];
+
+      if (nu_robot_ > arm_joints_ && st.gripper_registered && st.num_gripper_joints == 2) {
+        // Simple P-D control for prismatic fingers to track desired width
+        double w = std::clamp(st.gripper_target_width, st.gripper_min_width, st.gripper_max_width);
+        double qL_des = st.gripper_left_sign  * (w * 0.5);
+        double qR_des = st.gripper_right_sign * (w * 0.5);
+        int iL = arm_joints_ + 0;
+        int iR = arm_joints_ + 1;
+        if (total_joints_ > iR) {
+          double eL = q[iL] - qL_des;
+          double eR = q[iR] - qR_des;
+          double vL = dq[iL];
+          double vR = dq[iR];
+          tau_out[iL] = -st.gripper_kp * eL - st.gripper_kd * vL;
+          tau_out[iR] = -st.gripper_kp * eR - st.gripper_kd * vR;
+        }
+      }
+
+      out->SetFromVector(tau_out);
     }
     const drake::multibody::MultibodyPlant<double>* plant_;
     const drake::multibody::ModelInstanceIndex robot_;
     int arm_joints_;
     int total_joints_;
+    int nu_robot_;
     int state_in_;
     mutable std::unique_ptr<drake::systems::Context<double>> plant_context_;
     mutable Eigen::VectorXd integral_errors_;
     mutable Eigen::VectorXd velocity_integral_errors_;
   };
 
-  auto* ctrl = builder->AddSystem<ImpedanceWrapper>(plant, robot, num_arm_joints, num_total_joints);
+  num_arm_joints_cached = num_arm_joints;
+  num_total_joints_cached = num_total_joints;
+  const int nu_robot = plant->get_actuation_input_port(robot).size();
+  auto* ctrl = builder->AddSystem<ImpedanceWrapper>(plant, robot, num_arm_joints, num_total_joints, nu_robot);
   state_input_port_index = ctrl->state_in();
   // Connect only the robot model instance state (positions+velocities) to the controller.
   builder->Connect(plant->get_state_output_port(robot), ctrl->get_input_port(state_input_port_index));
 
   // Add torque adder and connect to plant. Select gravity torques for robot instance only.
-  torque_adder = builder->AddSystem<drake::systems::Adder<double>>(2, num_arm_joints);
+  // Size: actuation inputs for the robot instance (arm + fingers if actuated).
+  torque_adder = builder->AddSystem<drake::systems::Adder<double>>(2, nu_robot);
 
   const int nv_robot = plant->num_velocities(robot);
   const int nv_full = plant->num_velocities();
@@ -341,14 +380,12 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
   auto* demux_full = builder->AddSystem<drake::systems::Demultiplexer<double>>(std::vector<int>{nv_robot, nv_full - nv_robot});
   builder->Connect(g_comp->get_output_port(), demux_full->get_input_port());
 
-  drake::systems::OutputPortIndex gravity_arm_port_index;
-  if (num_total_joints > num_arm_joints) {
-    // Second demux: robot block -> [arm, gripper]
+  if (nu_robot == nv_robot) {
+    builder->Connect(demux_full->get_output_port(0), torque_adder->get_input_port(0));
+  } else {
     auto* demux_robot = builder->AddSystem<drake::systems::Demultiplexer<double>>(std::vector<int>{num_arm_joints, nv_robot - num_arm_joints});
     builder->Connect(demux_full->get_output_port(0), demux_robot->get_input_port());
     builder->Connect(demux_robot->get_output_port(0), torque_adder->get_input_port(0));
-  } else {
-    builder->Connect(demux_full->get_output_port(0), torque_adder->get_input_port(0));
   }
 
   builder->Connect(ctrl->get_output_port(), torque_adder->get_input_port(1));
@@ -374,12 +411,19 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       const auto& x = this->get_input_port(in_).Eval(ctx);
       Eigen::VectorXd q = x.head(total_joints_);
       Eigen::VectorXd dq = x.tail(total_joints_);
-      // Update joint state
+      // Update arm joint state
       for (int i = 0; i < 7 && i < q.size(); ++i) {
         st.q[i] = q[i];
         st.dq[i] = dq[i];
         st.dq_filtered[i] = 0.8 * st.dq_filtered[i] + 0.2 * st.dq[i];
         st.tau_J[i] = 0.1 * std::sin(q[i]);
+      }
+      // Update gripper state (assumes two prismatic joints ordered after arm)
+      if (q.size() >= 9) {
+        st.gripper_q[0] = std::max(0.0, q[7]);
+        st.gripper_q[1] = std::max(0.0, q[8]);
+        st.gripper_dq[0] = dq[7];
+        st.gripper_dq[1] = dq[8];
       }
       // EE pose
       plant_->SetPositions(plant_context_.get(), robot_, q.head(total_joints_));
@@ -396,6 +440,11 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       if (!seeded) {
         st.q_cmd = st.q;
         st.O_T_EE_cmd = st.O_T_EE;
+        // Initialize gripper target width from current state if present,
+        // but only if the user hasn't set a custom width yet.
+        if (!st.gripper_target_user_set && st.num_gripper_joints == 2) {
+          st.gripper_target_width = std::clamp(st.gripper_q[0] + st.gripper_q[1], st.gripper_min_width, st.gripper_max_width);
+        }
         seeded = true;
       }
     }
@@ -532,6 +581,33 @@ void FciSimEmbedder::SetModeChangeHandler(FrankaFciSimServer::ModeChangeHandler 
   }
 }
 
+void FciSimEmbedder::RegisterGripper(const GripperSpec& spec) {
+  auto& st = GetSharedState();
+  std::lock_guard<std::mutex> lock(st.mutex);
+  st.gripper_registered = true;
+  st.gripper_joint_names[0] = spec.left_joint_name;
+  st.gripper_joint_names[1] = spec.right_joint_name;
+  st.gripper_min_width = spec.min_width_m;
+  st.gripper_max_width = spec.max_width_m;
+  st.gripper_kp = spec.kp;
+  st.gripper_kd = spec.kd;
+  st.gripper_left_sign = spec.left_sign;
+  st.gripper_right_sign = spec.right_sign;
+}
+
+void FciSimEmbedder::SetGripperWidth(double width_m) {
+  auto& st = GetSharedState();
+  std::lock_guard<std::mutex> lock(st.mutex);
+  st.gripper_target_width = std::clamp(width_m, st.gripper_min_width, st.gripper_max_width);
+  st.gripper_target_user_set = true;
+}
+
+double FciSimEmbedder::GetGripperWidth() const {
+  auto& st = GetSharedState();
+  std::lock_guard<std::mutex> lock(st.mutex);
+  return st.gripper_q[0] + st.gripper_q[1];
+}
+
 std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
     drake::multibody::MultibodyPlant<double>* plant,
     drake::systems::DiagramBuilder<double>* builder,
@@ -596,6 +672,16 @@ std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
       }
     }
 
+    // Add actuators for gripper prismatic joints if present
+    try {
+      const auto& jl = plant->GetJointByName<drake::multibody::PrismaticJoint>("fer_finger_joint1", robot_instance);
+      plant->AddJointActuator(std::string("fer_finger_joint1_act"), jl, 100.0);
+    } catch (const std::exception&) {}
+    try {
+      const auto& jr = plant->GetJointByName<drake::multibody::PrismaticJoint>("fer_finger_joint2", robot_instance);
+      plant->AddJointActuator(std::string("fer_finger_joint2_act"), jr, 100.0);
+    } catch (const std::exception&) {}
+
     // Set light default damping to all known arm joints.
     const std::vector<std::pair<const char*, double>> damp = {{"fer_joint1",1.0},{"fer_joint2",1.0},{"fer_joint3",1.0},
                                                               {"fer_joint4",1.0},{"fer_joint5",1.0},{"fer_joint6",1.0},{"fer_joint7",1.0}};
@@ -621,6 +707,15 @@ std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
         } catch (const std::exception&) {
         }
       }
+      // Gripper actuators if present
+      try {
+        const auto& jl = plant->GetJointByName<drake::multibody::PrismaticJoint>("fer_finger_joint1", robot_instance);
+        plant->AddJointActuator(std::string("fer_finger_joint1_act"), jl, 100.0);
+      } catch (const std::exception&) {}
+      try {
+        const auto& jr = plant->GetJointByName<drake::multibody::PrismaticJoint>("fer_finger_joint2", robot_instance);
+        plant->AddJointActuator(std::string("fer_finger_joint2_act"), jr, 100.0);
+      } catch (const std::exception&) {}
       const std::vector<std::pair<const char*, double>> damp = {{"fer_joint1",1.0},{"fer_joint2",1.0},{"fer_joint3",1.0},
                                                                 {"fer_joint4",1.0},{"fer_joint5",1.0},{"fer_joint6",1.0},{"fer_joint7",1.0}};
       for (const auto& [name, d] : damp) {

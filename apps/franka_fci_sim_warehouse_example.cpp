@@ -42,6 +42,19 @@ int main() {
   opts.turbo = false;
   auto embed = franka_fci_sim::FciSimEmbedder::AutoAttach(&plant, &scene_graph, &builder, auto_opts, opts);
 
+  // Register the gripper and set an initial opening width
+  franka_fci_sim::FciSimEmbedder::GripperSpec gripper_spec;
+  gripper_spec.left_joint_name = "fer_finger_joint1";
+  gripper_spec.right_joint_name = "fer_finger_joint2";
+  gripper_spec.min_width_m = 0.0;
+  gripper_spec.max_width_m = 0.08;
+  gripper_spec.kp = 200.0;
+  gripper_spec.kd = 5.0;
+  gripper_spec.left_sign = +1.0;
+  gripper_spec.right_sign = +1.0;
+  embed->RegisterGripper(gripper_spec);
+  embed->SetGripperWidth(0.06);
+
   // Meshcat visualization
   auto meshcat = std::make_shared<drake::geometry::Meshcat>();
   drake::visualization::AddDefaultVisualization(&builder, meshcat);

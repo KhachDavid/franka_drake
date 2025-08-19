@@ -124,6 +124,30 @@ class FciSimEmbedder {
   // Optional: override mode change callback (e.g., for app-level telemetry).
   void SetModeChangeHandler(FrankaFciSimServer::ModeChangeHandler handler);
 
+  // End-effector/gripper API (library-level, C++ client friendly)
+  struct GripperSpec {
+    std::string left_joint_name = "fer_finger_joint1";
+    std::string right_joint_name = "fer_finger_joint2";
+    double min_width_m = 0.0;
+    double max_width_m = 0.08;
+    double kp = 200.0;
+    double kd = 5.0;
+    double left_sign = 1.0;
+    double right_sign = 1.0;
+  };
+
+  // Register a simple two-finger gripper by joint names. Must be called
+  // before using SetGripperWidth. No-op if joints not present.
+  void RegisterGripper(const GripperSpec& spec);
+
+  // Command the gripper opening in meters (sum of finger gaps). Clamped to
+  // registered min/max. Safe to call at any time.
+  void SetGripperWidth(double width_m);
+
+  // Returns the current gripper opening estimate (meters). If unavailable,
+  // returns 0.0.
+  double GetGripperWidth() const;
+
   ~FciSimEmbedder();
 
  private:
