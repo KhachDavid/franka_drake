@@ -31,6 +31,7 @@
 #include <filesystem>
 
 #include "franka_drake/fci_sim_server.h"
+#include "franka_drake/gripper_sim_server.h"
 // Using in-file impedance wrapper for parity with server main
 
 namespace franka_fci_sim {
@@ -134,9 +135,13 @@ struct FciSimEmbedder::Impl {
   int state_input_port_index = -1;
   int num_arm_joints_cached = 7;
   int num_total_joints_cached = 7;
+  // Cached indices for gripper joints within the robot instance position vector
+  int gripper_left_q_index = -1;
+  int gripper_right_q_index = -1;
 
   // Networking server
   std::unique_ptr<FrankaFciSimServer> server;
+  std::unique_ptr<FrankaGripperSimServer> gripper_server;
 
   // Wiring helpers
   std::pair<int, int> DetectEndEffectorConfiguration();
@@ -169,12 +174,26 @@ std::pair<int, int> FciSimEmbedder::Impl::DetectEndEffectorConfiguration() {
     state.num_gripper_joints = 0;
     for (const auto& jn : gripper_candidates) {
       try {
-        plant->GetJointByName(jn, robot);
+        const auto& joint = plant->GetJointByName(jn, robot);
+        // Resolve q indices inside the model instance
+        const int nq_before = plant->num_positions(robot);
+        (void)nq_before; // quiet unused variable in some Drake versions
+        // Fallback: query via tree API if available
         if (state.num_gripper_joints < 2) {
           state.gripper_joint_names[state.num_gripper_joints++] = jn;
         }
       } catch (const std::exception&) {
       }
+    }
+    // Try to query position indices using MultibodyPlant APIs
+    try {
+      const auto& jl = plant->GetJointByName("fer_finger_joint1", robot);
+      const auto& jr = plant->GetJointByName("fer_finger_joint2", robot);
+      gripper_left_q_index = jl.position_start();
+      gripper_right_q_index = jr.position_start();
+    } catch (const std::exception&) {
+      gripper_left_q_index = 7;
+      gripper_right_q_index = 8;
     }
     // EE parameters for gripper variants
     if (state.ee_frame_name == "fer_hand_tcp") {
@@ -215,8 +234,10 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
    public:
     explicit ImpedanceWrapper(const drake::multibody::MultibodyPlant<double>* plant,
                               drake::multibody::ModelInstanceIndex robot,
-                              int arm_joints, int total_joints, int nu_robot)
-        : plant_(plant), robot_(robot), arm_joints_(arm_joints), total_joints_(total_joints), nu_robot_(nu_robot) {
+                              int arm_joints, int total_joints, int nu_robot,
+                              int gripper_left_q_index, int gripper_right_q_index)
+        : plant_(plant), robot_(robot), arm_joints_(arm_joints), total_joints_(total_joints), nu_robot_(nu_robot),
+          gripper_left_q_index_(gripper_left_q_index), gripper_right_q_index_(gripper_right_q_index) {
       state_in_ = this->DeclareVectorInputPort("robot_state", drake::systems::BasicVector<double>(2 * total_joints_)).get_index();
       this->DeclareVectorOutputPort("control_torques", drake::systems::BasicVector<double>(nu_robot_),
                                     &ImpedanceWrapper::CalcTorques);
@@ -331,14 +352,14 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       Eigen::VectorXd tau_out = Eigen::VectorXd::Zero(nu_robot_);
       for (int i = 0; i < std::min(arm_joints_, nu_robot_); ++i) tau_out[i] = tau[i];
 
-      if (nu_robot_ > arm_joints_ && st.gripper_registered && st.num_gripper_joints == 2) {
+      if (nu_robot_ > arm_joints_ && st.gripper_registered && st.num_gripper_joints == 2 && gripper_left_q_index_ >= 0 && gripper_right_q_index_ >= 0) {
         // Simple P-D control for prismatic fingers to track desired width
         double w = std::clamp(st.gripper_target_width, st.gripper_min_width, st.gripper_max_width);
         double qL_des = st.gripper_left_sign  * (w * 0.5);
         double qR_des = st.gripper_right_sign * (w * 0.5);
-        int iL = arm_joints_ + 0;
-        int iR = arm_joints_ + 1;
-        if (total_joints_ > iR) {
+        const int iL = gripper_left_q_index_;
+        const int iR = gripper_right_q_index_;
+        if (total_joints_ > iR && iL < nu_robot_ && iR < nu_robot_) {
           double eL = q[iL] - qL_des;
           double eR = q[iR] - qR_des;
           double vL = dq[iL];
@@ -355,6 +376,8 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
     int arm_joints_;
     int total_joints_;
     int nu_robot_;
+    int gripper_left_q_index_;
+    int gripper_right_q_index_;
     int state_in_;
     mutable std::unique_ptr<drake::systems::Context<double>> plant_context_;
     mutable Eigen::VectorXd integral_errors_;
@@ -364,7 +387,8 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
   num_arm_joints_cached = num_arm_joints;
   num_total_joints_cached = num_total_joints;
   const int nu_robot = plant->get_actuation_input_port(robot).size();
-  auto* ctrl = builder->AddSystem<ImpedanceWrapper>(plant, robot, num_arm_joints, num_total_joints, nu_robot);
+  auto* ctrl = builder->AddSystem<ImpedanceWrapper>(plant, robot, num_arm_joints, num_total_joints, nu_robot,
+                                                    gripper_left_q_index, gripper_right_q_index);
   state_input_port_index = ctrl->state_in();
   // Connect only the robot model instance state (positions+velocities) to the controller.
   builder->Connect(plant->get_state_output_port(robot), ctrl->get_input_port(state_input_port_index));
@@ -398,8 +422,11 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
    public:
     StateMirror(const drake::multibody::MultibodyPlant<double>* plant,
                 drake::multibody::ModelInstanceIndex robot,
-                int total_joints)
-        : plant_(plant), robot_(robot), total_joints_(total_joints) {
+                int total_joints,
+                int gripper_left_q_index,
+                int gripper_right_q_index)
+        : plant_(plant), robot_(robot), total_joints_(total_joints),
+          gripper_left_q_index_(gripper_left_q_index), gripper_right_q_index_(gripper_right_q_index) {
       in_ = this->DeclareVectorInputPort("robot_state", drake::systems::BasicVector<double>(2 * total_joints_)).get_index();
       this->DeclarePeriodicUnrestrictedUpdateEvent(0.001, 0.0, &StateMirror::DoUpdate);
       plant_context_ = plant_->CreateDefaultContext();
@@ -418,12 +445,12 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         st.dq_filtered[i] = 0.8 * st.dq_filtered[i] + 0.2 * st.dq[i];
         st.tau_J[i] = 0.1 * std::sin(q[i]);
       }
-      // Update gripper state (assumes two prismatic joints ordered after arm)
-      if (q.size() >= 9) {
-        st.gripper_q[0] = std::max(0.0, q[7]);
-        st.gripper_q[1] = std::max(0.0, q[8]);
-        st.gripper_dq[0] = dq[7];
-        st.gripper_dq[1] = dq[8];
+      // Update gripper state
+      if (gripper_left_q_index_ >= 0 && gripper_right_q_index_ >= 0 && q.size() > gripper_right_q_index_) {
+        st.gripper_q[0] = std::max(0.0, q[gripper_left_q_index_]);
+        st.gripper_q[1] = std::max(0.0, q[gripper_right_q_index_]);
+        st.gripper_dq[0] = dq[gripper_left_q_index_];
+        st.gripper_dq[1] = dq[gripper_right_q_index_];
       }
       // EE pose
       plant_->SetPositions(plant_context_.get(), robot_, q.head(total_joints_));
@@ -453,9 +480,11 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
     int total_joints_;
     int in_;
     mutable std::unique_ptr<drake::systems::Context<double>> plant_context_;
+    int gripper_left_q_index_;
+    int gripper_right_q_index_;
   };
 
-  auto* mirror = builder->AddSystem<StateMirror>(plant, robot, num_total_joints);
+  auto* mirror = builder->AddSystem<StateMirror>(plant, robot, num_total_joints, gripper_left_q_index, gripper_right_q_index);
   builder->Connect(plant->get_state_output_port(robot), mirror->get_input_port(0));
 }
 
@@ -566,6 +595,14 @@ void FciSimEmbedder::StartServer(uint16_t tcp_port, uint16_t udp_port) {
   });
   // Run in background thread
   std::thread([srv = impl_->server.get()](){ srv->run(); }).detach();
+
+  // Start libfranka-compatible gripper server on its port
+  using research_interface::gripper::kCommandPort;
+  impl_->gripper_server = std::make_unique<FrankaGripperSimServer>(kCommandPort,
+      [](){ return GetSharedState().gripper_q[0] + GetSharedState().gripper_q[1]; },
+      [this](double width, double speed){ (void)speed; this->SetGripperWidth(width); },
+      [this](){ this->SetGripperWidth(GetSharedState().gripper_max_width); });
+  std::thread([srv = impl_->gripper_server.get()](){ srv->run(); }).detach();
 }
 
 void FciSimEmbedder::StopServer() {

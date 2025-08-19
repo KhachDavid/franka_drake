@@ -132,8 +132,8 @@ class FciSimEmbedder {
     double max_width_m = 0.08;
     double kp = 200.0;
     double kd = 5.0;
-    double left_sign = 1.0;
-    double right_sign = 1.0;
+    double left_sign = 1.0;   // + increases opening on left finger
+    double right_sign = -1.0; // - increases opening on right finger (axis is -Y)
   };
 
   // Register a simple two-finger gripper by joint names. Must be called

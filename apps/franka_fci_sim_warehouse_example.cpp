@@ -53,7 +53,7 @@ int main() {
   gripper_spec.left_sign = +1.0;
   gripper_spec.right_sign = +1.0;
   embed->RegisterGripper(gripper_spec);
-  embed->SetGripperWidth(0.06);
+  embed->SetGripperWidth(0.005);
 
   // Meshcat visualization
   auto meshcat = std::make_shared<drake::geometry::Meshcat>();
