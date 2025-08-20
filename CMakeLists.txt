@@ -24,7 +24,7 @@ include_directories(include)
 
 # Add subdirectories
 add_subdirectory(src)
-add_subdirectory(apps)
+add_subdirectory(examples)
 
 enable_testing()
 add_subdirectory(test)
@@ -32,5 +32,4 @@ add_subdirectory(test)
 # Install rules
 install(DIRECTORY include/ DESTINATION include/franka_drake)
 install(DIRECTORY models/ DESTINATION share/franka_drake)
-install(DIRECTORY scripts/ DESTINATION share/franka_drake)
-install(DIRECTORY kb/ DESTINATION share/franka_drake/kb)
+install(DIRECTORY docs/ DESTINATION share/franka_drake/docs)
