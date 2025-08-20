@@ -82,7 +82,7 @@
 
     <!-- Boxes to pick - smaller and closer to robot -->
     <model name="box_red">
-      <pose>0.39 -0.175 0.08 0 0 0</pose>
+      <pose>0.45 -0.15 0.08 0 0 0</pose>
       <link name="box_link">
         <inertial>
           <!-- 4 cm cube at PP (density ~1050 kg/m^3) => m ≈ 0.04^3 * 1050 ≈ 0.0672 kg -->

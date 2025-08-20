@@ -393,30 +393,64 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // POSITION CONTROL (only when we have active position commands)
       else if (st.has_position_command && commands_active) {
-        // Joint-space PD+I with setpoint rate limiting; gravity handled by external g_comp.
-        const double K[7]  = {60,60,60,60,40,30,24};
-        const double D[7]  = {20,20,20,20,14,11,9};
-        const double Ki[7] = {4,4,4,4,3,2.5,2};
+        // Motion generator approach: smooth trajectory generation with rate limiting like libfranka-sim
+        // Moderate gains with emphasis on trajectory smoothing rather than high stiffness
+        const double K[7]  = {150,150,150,150,100,80,60};    // Moderate stiffness
+        const double D[7]  = {15,15,15,15,12,10,8};          // Moderate damping
+        const double Ki[7] = {0.5,0.5,0.5,0.5,0.3,0.2,0.1}; // Small integral for steady-state
+        
+        // Joint limits for rate limiting (rad/s and rad/s²)
+        static const double max_vel[7] = {2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61};
+        static const double max_acc[7] = {15.0, 7.5, 10.0, 12.5, 15.0, 20.0, 20.0};
+        
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
-        // Rate-limit desired q to mimic libfranka shaping.
-        const double max_rate = 1.5; // rad/s
+        
+        // Trajectory generation with smooth acceleration-limited motion
         for (int i = 0; i < arm_joints_; ++i) {
-          double qd_target = plant_to_franka_sign[i] * st.q_cmd[i];
-          double qd_prev = q_cmd_filtered_[i];
-          double step = qd_target - qd_prev;
-          double max_step = max_rate * 0.001;
-          if (step > max_step) step = max_step; else if (step < -max_step) step = -max_step;
-          q_cmd_filtered_[i] = qd_prev + step;
-          double e = q_cmd_filtered_[i] - q[i];
-          const double max_pos_err = 0.4;  // rad
-          if (e > max_pos_err) e = max_pos_err; else if (e < -max_pos_err) e = -max_pos_err;
-          double vj = dq[i];
-          const double max_velocity = 1.0; // rad/s safety clamp
-          if (std::abs(vj) > max_velocity) vj = (vj > 0) ? max_velocity : -max_velocity;
-          double integ = integral_errors_[i] + e * 0.001;
-          if (integ > 0.5) integ = 0.5; else if (integ < -0.5) integ = -0.5;
+          double q_target = plant_to_franka_sign[i] * st.q_cmd[i];
+          double q_current = q[i];
+          double dq_current = dq[i];
+          
+          // Compute desired trajectory point with rate limiting
+          double q_error = q_target - q_cmd_filtered_[i];
+          
+          // Velocity-limited approach to target
+          double max_step_vel = max_vel[i] * 0.001; // max velocity step per 1ms
+          if (q_error > max_step_vel) {
+            q_cmd_filtered_[i] += max_step_vel;
+          } else if (q_error < -max_step_vel) {
+            q_cmd_filtered_[i] -= max_step_vel;
+          } else {
+            q_cmd_filtered_[i] = q_target;
+          }
+          
+          // Compute desired velocity (derivative of filtered position)
+          static std::array<double, 7> q_cmd_prev{{0,0,0,0,0,0,0}};
+          double dq_desired = (q_cmd_filtered_[i] - q_cmd_prev[i]) / 0.001;
+          q_cmd_prev[i] = q_cmd_filtered_[i];
+          
+          // Clamp desired velocity
+          dq_desired = std::clamp(dq_desired, -max_vel[i], max_vel[i]);
+          
+          // PD+I control with velocity feed-forward
+          double pos_error = q_cmd_filtered_[i] - q_current;
+          double vel_error = dq_desired - dq_current;
+          
+          // Integrate position error with anti-windup
+          double integ = integral_errors_[i] + pos_error * 0.001;
+          integ = std::clamp(integ, -0.1, 0.1); // tight integral bounds
           integral_errors_[i] = integ;
-          tau[i] = K[i] * e - D[i] * vj + Ki[i] * integral_errors_[i];
+          
+          // Control law: PD with velocity feed-forward + small integral
+          tau[i] = K[i] * pos_error + D[i] * vel_error + Ki[i] * integ;
+          
+          // Acceleration limiting on torque output
+          static std::array<double, 7> tau_prev{{0,0,0,0,0,0,0}};
+          double tau_rate = (tau[i] - tau_prev[i]) / 0.001;
+          double max_tau_rate = max_acc[i] * 10.0; // rough torque rate from acceleration
+          if (tau_rate > max_tau_rate) tau[i] = tau_prev[i] + max_tau_rate * 0.001;
+          if (tau_rate < -max_tau_rate) tau[i] = tau_prev[i] - max_tau_rate * 0.001;
+          tau_prev[i] = tau[i];
         }
       } else {
         // Idle: zero from controller; g_comp holds posture.
