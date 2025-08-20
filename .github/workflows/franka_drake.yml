@@ -46,7 +46,9 @@ jobs:
 
       - name: Locate franka_drake directory
         run: |
-          if [ -d franka_drake ]; then
+          if [ -f CMakeLists.txt ] && grep -qi "^project(\s*franka_drake" CMakeLists.txt; then
+            echo "FDIR=." >> $GITHUB_ENV
+          elif [ -d franka_drake ]; then
             echo "FDIR=franka_drake" >> $GITHUB_ENV
           elif [ -d src/franka_drake ]; then
             echo "FDIR=src/franka_drake" >> $GITHUB_ENV
