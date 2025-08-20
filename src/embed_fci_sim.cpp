@@ -393,80 +393,32 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // POSITION CONTROL (only when we have active position commands)
       else if (st.has_position_command && commands_active) {
-        // Motion generator approach: maximum precision tuning
-        // Extremely high gains for sub-degree tracking
-        const double K[7]  = {800,1000,800,800,400,300,200}; // Maximum stiffness for precision
-        const double D[7]  = {60,80,60,60,40,35,25};         // High damping for stability
-        const double Ki[7] = {12,15,12,12,8,6,4};            // Very strong integral action
-        
-        // Joint limits for rate limiting (rad/s and rad/s²) - more aggressive
-        static const double max_vel[7] = {2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61};
-        static const double max_acc[7] = {15.0, 15.0, 15.0, 15.0, 20.0, 25.0, 25.0};
-        
+        // Simple, stable PD controller - back to basics
+        const double K[7]  = {100,100,100,100,80,60,40};     // Conservative stiffness
+        const double D[7]  = {10,10,10,10,8,6,4};            // Conservative damping
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
         
-        // Trajectory generation with smooth acceleration-limited motion
+        // Simple rate-limited setpoint tracking
+        const double max_rate = 1.0; // rad/s - conservative
         for (int i = 0; i < arm_joints_; ++i) {
           double q_target = plant_to_franka_sign[i] * st.q_cmd[i];
           double q_current = q[i];
           double dq_current = dq[i];
           
-          // Compute desired trajectory point with rate limiting
+          // Simple rate limiting
           double q_error = q_target - q_cmd_filtered_[i];
-          
-          // Adaptive velocity-limited approach to target - faster convergence for large errors
-          double max_step_vel = max_vel[i] * 0.001; // max velocity step per 1ms
-          
-          // Extremely aggressive adaptive scaling for fastest convergence
-          double error_scale = std::min(10.0, 1.0 + 9.0 * std::abs(q_error) / 0.2); // up to 10x faster for errors > 0.2 rad
-          max_step_vel *= error_scale;
-          
-          if (q_error > max_step_vel) {
-            q_cmd_filtered_[i] += max_step_vel;
-          } else if (q_error < -max_step_vel) {
-            q_cmd_filtered_[i] -= max_step_vel;
+          double max_step = max_rate * 0.001;
+          if (q_error > max_step) {
+            q_cmd_filtered_[i] += max_step;
+          } else if (q_error < -max_step) {
+            q_cmd_filtered_[i] -= max_step;
           } else {
             q_cmd_filtered_[i] = q_target;
           }
           
-          // Compute desired velocity (derivative of filtered position)
-          static std::array<double, 7> q_cmd_prev{{0,0,0,0,0,0,0}};
-          double dq_desired = (q_cmd_filtered_[i] - q_cmd_prev[i]) / 0.001;
-          q_cmd_prev[i] = q_cmd_filtered_[i];
-          
-          // Clamp desired velocity
-          dq_desired = std::clamp(dq_desired, -max_vel[i], max_vel[i]);
-          
-          // PD+I control with velocity feed-forward
+          // Simple PD control
           double pos_error = q_cmd_filtered_[i] - q_current;
-          double vel_error = dq_desired - dq_current;
-          
-          // Integrate position error with anti-windup - maximum bounds for precision
-          double integ = integral_errors_[i] + pos_error * 0.001;
-          double max_integ = (i < 4) ? 0.8 : 0.5; // maximum integral bounds for heavy joints
-          integ = std::clamp(integ, -max_integ, max_integ);
-          integral_errors_[i] = integ;
-          
-          // Add derivative kick for faster response to command changes
-          static std::array<double, 7> pos_error_prev{{0,0,0,0,0,0,0}};
-          double d_pos_error = (pos_error - pos_error_prev[i]) / 0.001;
-          pos_error_prev[i] = pos_error;
-          
-          // Control law: PID with velocity feed-forward + enhanced derivative kick
-          double derivative_kick = -D[i] * 0.4 * d_pos_error; // 40% derivative on position error change
-          
-          // Add position-dependent gain scheduling for final precision
-          double precision_boost = (std::abs(pos_error) < 0.01) ? 1.5 : 1.0; // 50% gain boost for small errors
-          
-          tau[i] = precision_boost * (K[i] * pos_error + D[i] * vel_error + Ki[i] * integ) + derivative_kick;
-          
-          // Acceleration limiting on torque output
-          static std::array<double, 7> tau_prev{{0,0,0,0,0,0,0}};
-          double tau_rate = (tau[i] - tau_prev[i]) / 0.001;
-          double max_tau_rate = max_acc[i] * 10.0; // rough torque rate from acceleration
-          if (tau_rate > max_tau_rate) tau[i] = tau_prev[i] + max_tau_rate * 0.001;
-          if (tau_rate < -max_tau_rate) tau[i] = tau_prev[i] - max_tau_rate * 0.001;
-          tau_prev[i] = tau[i];
+          tau[i] = K[i] * pos_error - D[i] * dq_current;
         }
       } else {
         // Idle: zero from controller; g_comp holds posture.
