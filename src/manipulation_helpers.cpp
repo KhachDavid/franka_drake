@@ -92,7 +92,17 @@ void ExecuteJointTrajectory(
 
   const double dt = 0.001;
   const double t_start = simulator.get_context().get_time();
-  const double effective_duration = has_payload ? duration_seconds * 1.5 : duration_seconds;
+  // Enforce a conservative joint velocity limit to avoid aggressive motions.
+  // Use a uniform cap for simplicity; tuned for Panda-like dynamics.
+  const double max_joint_vel = has_payload ? 0.4 : 0.6;  // rad/s equivalent
+  double required = 0.0;
+  const Eigen::VectorXd q_delta = (q_end - q_start).cwiseAbs();
+  for (int i = 0; i < q_delta.size(); ++i) {
+    required = std::max(required, q_delta[i] / max_joint_vel);
+  }
+  // Add a safety margin and respect the requested minimum duration.
+  double effective_duration = std::max(duration_seconds, required * 1.25);
+  if (has_payload) effective_duration *= 1.25;  // a bit slower when carrying
 
   while (simulator.get_context().get_time() < t_start + effective_duration) {
     const double t_rel = simulator.get_context().get_time() - t_start;
@@ -101,7 +111,9 @@ void ExecuteJointTrajectory(
     const Eigen::VectorXd q_interp = (1.0 - s) * q_start + s * q_end;
 
     plant.SetPositions(&plant_ctx, robot, q_interp);
-    const double vel_scale = has_payload ? 0.3 : 0.0;
+    // Set a small nominal velocity toward the goal for stability (not used by Drake physics, but
+    // keeps articulated dynamics calm when other systems peek at v).
+    const double vel_scale = has_payload ? 0.25 : 0.1;
     plant.SetVelocities(&plant_ctx, robot, vel_scale * (q_end - q_start) / effective_duration);
 
     if (has_payload && attached_body && attachment_transform) {
