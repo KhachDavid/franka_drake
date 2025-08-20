@@ -44,11 +44,24 @@ jobs:
           sudo mkdir -p /opt/drake
           sudo tar -xzf drake.tar.gz -C /opt/drake --strip-components=1
 
+      - name: Locate franka_drake directory
+        run: |
+          if [ -d franka_drake ]; then
+            echo "FDIR=franka_drake" >> $GITHUB_ENV
+          elif [ -d src/franka_drake ]; then
+            echo "FDIR=src/franka_drake" >> $GITHUB_ENV
+          else
+            echo "franka_drake directory not found in repo root or under src/" >&2
+            echo "Repository tree:" >&2
+            ls -la
+            exit 1
+          fi
+
       - name: Configure
         env:
           LD_LIBRARY_PATH: /opt/drake/lib
         run: |
-          cmake -S src/franka_drake -B src/franka_drake/build \
+          cmake -S "$FDIR" -B "$FDIR/build" \
             -DCMAKE_PREFIX_PATH=/opt/drake \
             -DCMAKE_BUILD_TYPE=Release
 
@@ -56,12 +69,12 @@ jobs:
         env:
           LD_LIBRARY_PATH: /opt/drake/lib
         run: |
-          cmake --build src/franka_drake/build -j"$(nproc)"
+          cmake --build "$FDIR/build" -j"$(nproc)"
 
       - name: Test
         env:
           LD_LIBRARY_PATH: /opt/drake/lib
         run: |
-          ctest --test-dir src/franka_drake/build --output-on-failure -j"$(nproc)"
+          ctest --test-dir "$FDIR/build" --output-on-failure -j"$(nproc)"
 
 
