@@ -36,8 +36,8 @@ jobs:
           UBUNTU_CODENAME=$(lsb_release -cs)
           BASE_URL=https://drake-packages.csail.mit.edu/drake
           case "$UBUNTU_CODENAME" in
-            jammy)  DRAKE_PKG=drake-20250101-jammy.tar.gz ;;
-            noble)  DRAKE_PKG=drake-20250101-noble.tar.gz ;;
+            jammy)  DRAKE_PKG=drake-latest-jammy.tar.gz ;;
+            noble)  DRAKE_PKG=drake-latest-noble.tar.gz ;;
             *) echo "Unsupported Ubuntu codename: $UBUNTU_CODENAME"; exit 1 ;;
           esac
           curl -fsSL -o drake.tar.gz "$BASE_URL/nightly/$DRAKE_PKG"
