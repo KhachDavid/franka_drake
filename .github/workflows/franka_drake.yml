@@ -1,0 +1,61 @@
+name: franka_drake CI
+
+on:
+  push:
+    paths:
+      - 'franka_drake/**'
+      - '.github/workflows/franka_drake.yml'
+  pull_request:
+    paths:
+      - 'franka_drake/**'
+      - '.github/workflows/franka_drake.yml'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ ninja-build curl lsb-release \
+            libpoco-dev libeigen3-dev \
+            libgtest-dev
+          # Build and install GTest (provides GTest::GTest / GTest::Main)
+          if [ -d /usr/src/googletest ]; then SRC=/usr/src/googletest; else SRC=/usr/src/gtest; fi
+          sudo cmake -S "$SRC" -B "$SRC/build"
+          sudo cmake --build "$SRC/build" --target install -j"$(nproc)"
+
+      - name: Install Drake (nightly precompiled)
+        run: |
+          UBUNTU_CODENAME=$(lsb_release -cs)
+          curl -L -o drake.tar.gz https://github.com/RobotLocomotion/drake/releases/download/nightly/drake-${UBUNTU_CODENAME}-latest.tar.gz
+          sudo mkdir -p /opt/drake
+          sudo tar -xzf drake.tar.gz -C /opt/drake --strip-components=1
+
+      - name: Configure
+        env:
+          LD_LIBRARY_PATH: /opt/drake/lib
+        run: |
+          cmake -S src/franka_drake -B src/franka_drake/build \
+            -DCMAKE_PREFIX_PATH=/opt/drake \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        env:
+          LD_LIBRARY_PATH: /opt/drake/lib
+        run: |
+          cmake --build src/franka_drake/build -j"$(nproc)"
+
+      - name: Test
+        env:
+          LD_LIBRARY_PATH: /opt/drake/lib
+        run: |
+          ctest --test-dir src/franka_drake/build --output-on-failure -j"$(nproc)"
+
+
