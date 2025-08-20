@@ -9,9 +9,14 @@
 #include <drake/systems/analysis/simulator.h>
 #include <drake/visualization/visualization_config_functions.h>
 #include <drake/geometry/meshcat.h>
+#include <drake/geometry/scene_graph_inspector.h>
+#include <drake/geometry/geometry_roles.h>
+#include <drake/geometry/collision_filter_declaration.h>
 #include <drake/multibody/inverse_kinematics/inverse_kinematics.h>
 #include <drake/solvers/solve.h>
 #include <drake/multibody/tree/weld_joint.h>
+#include <drake/geometry/query_object.h>
+#include <drake/geometry/shape_specification.h>
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -71,9 +76,45 @@ int main() {
   gripper_spec.right_sign = -1.0;  // Right finger moves in opposite direction (negative Y axis)
   embed->RegisterGripper(gripper_spec);
 
-  // Meshcat visualization
+  // Meshcat visualization (added before build)
   auto meshcat = std::make_shared<drake::geometry::Meshcat>();
   drake::visualization::AddDefaultVisualization(&builder, meshcat);
+
+  // Find the robot (no context yet)
+  const auto& robot_instance = plant.GetBodyByName("fer_link1").model_instance();
+  
+  // Find the red cube (try different possible names)
+  auto red_cube_body = FindObjectByName(plant, "box_link");
+  if (!red_cube_body) {
+    std::cerr << "Could not find red cube in scene!" << std::endl;
+    return -1;
+  }
+
+  // Targeted collision filtering: exclude palm (fer_hand) vs boxes to avoid overly conservative mesh blocking grasp
+  try {
+    const auto& inspector = scene_graph.model_inspector();
+    drake::geometry::GeometrySet hand_set;
+    drake::geometry::GeometrySet box_set;
+    size_t hand_count = 0;
+    size_t box_count = 0;
+    const auto hand_frame = plant.GetBodyFrameIdOrThrow(plant.GetBodyByName("fer_hand", robot_instance).index());
+    for (const auto& gid : inspector.GetGeometries(hand_frame, drake::geometry::Role::kProximity)) { hand_set.Add(gid); ++hand_count; }
+    // Collect all proximity geoms for any body named "box_link" (all colored boxes in scene)
+    for (drake::multibody::BodyIndex i(0); i < plant.num_bodies(); ++i) {
+      const auto& body = plant.get_body(i);
+      if (body.name() == std::string("box_link")) {
+        const auto frame = plant.GetBodyFrameIdOrThrow(body.index());
+        for (const auto& gid : inspector.GetGeometries(frame, drake::geometry::Role::kProximity)) { box_set.Add(gid); ++box_count; }
+      }
+    }
+    if (hand_count > 0 && box_count > 0) {
+      scene_graph.collision_filter_manager().Apply(
+          drake::geometry::CollisionFilterDeclaration().ExcludeBetween(hand_set, box_set));
+      std::cout << "Applied collision filter: exclude fer_hand vs all box_* proximity." << std::endl;
+    }
+  } catch (...) {
+    std::cout << "Warning: could not apply palm-vs-box collision filter." << std::endl;
+  }
 
   // Build and simulate
   auto diagram = builder.Build();
@@ -94,19 +135,38 @@ int main() {
   embed->SetGripperWidth(0.02);  // Close
   WaitForGripper(simulator, 1.0);
 
-  // Find the robot and objects
-  const auto& robot_instance = plant.GetBodyByName("fer_link1").model_instance();
-  
-  // Find the red cube (try different possible names)
-  auto red_cube_body = FindObjectByName(plant, "box_link");
-  if (!red_cube_body) {
-    std::cerr << "Could not find red cube in scene!" << std::endl;
-    return -1;
+  // Infer object size (prefer proximity geometry box); fallback to 0.04m
+  double object_min_span_m = 0.04;
+  try {
+    const auto frame_id = plant.GetBodyFrameIdOrThrow(plant.get_body(*red_cube_body).index());
+    const auto& inspector = scene_graph.model_inspector();
+    std::vector<drake::geometry::GeometryId> geoms = inspector.GetGeometries(frame_id, drake::geometry::Role::kProximity);
+    if (geoms.empty()) {
+      geoms = inspector.GetGeometries(frame_id, drake::geometry::Role::kIllustration);
+    }
+    for (const auto& gid : geoms) {
+      const auto& shape = inspector.GetShape(gid);
+      if (const auto* box = dynamic_cast<const drake::geometry::Box*>(&shape)) {
+        const Eigen::Vector3d size = box->size();
+        object_min_span_m = size.minCoeff();
+        break;
+      }
+    }
+  } catch (...) {
+    // Keep fallback value
   }
+
+  // Compute gripper setpoints from object size
+  const double kClearance = 0.002;  // 2 mm clearance
+  const double final_close_width = std::clamp(object_min_span_m + kClearance, 0.0, 0.08);
+  const double preclose_width = std::min(0.07, object_min_span_m + 0.02);
 
   // Get current positions
   const auto& ee_frame = plant.GetFrameByName("fer_hand_tcp", robot_instance);
   const auto& world_frame = plant.world_frame();
+
+  // Capture starting home configuration for final return (now that context exists)
+  const Eigen::VectorXd q_home_config = plant.GetPositions(plant_ctx, robot_instance);
   
   // Helper to solve IK and execute a move to the target pose
   auto move_to_pose = [&](const drake::math::RigidTransformd& X_W_target,
@@ -163,18 +223,18 @@ int main() {
 
     std::cout << "\n=== Grasp attempt " << attempt << " ===" << std::endl;
     embed->SetGripperWidth(0.07);
-    WaitForGripper(simulator, 0.5);
+    WaitForGripper(simulator, 2);
 
     if (!move_to_pose(X_W_approach, "Approach above cube")) continue;
     if (!move_to_pose(X_W_pregrasp, "Pregrasp above cube")) continue;
 
-    embed->SetGripperWidth(0.05);
-    WaitForGripper(simulator, 0.5);
+    embed->SetGripperWidth(preclose_width);
+    WaitForGripper(simulator, 2);
 
     if (!move_to_pose(X_W_grasp, "Move to grasp")) continue;
 
-    embed->SetGripperWidth(0.042);
-    WaitForGripper(simulator, 0.8);
+    embed->SetGripperWidth(final_close_width);
+    WaitForGripper(simulator, 2);
 
     // Evaluate grasp
     const auto X_W_EE = plant.CalcRelativeTransform(plant_ctx, world_frame, ee_frame);
@@ -183,9 +243,9 @@ int main() {
     const double dist = offset.norm();
     const double width_now = embed->GetGripperWidth();
     const bool good_pose = dist < 0.03;
-    const bool good_width = width_now < 0.048;
+    const bool good_width = width_now <= final_close_width + 0.004;   // within +4mm of target
     const bool near_pose = dist < 0.05;
-    const bool closing_enough = width_now < 0.055;
+    const bool closing_enough = width_now <= final_close_width + 0.010; // within +10mm
     if ((good_pose && good_width) || (near_pose && closing_enough)) {
       std::cout << "Grasp success (dist=" << dist << ", width=" << width_now << ")" << std::endl;
       attachment_transform = AttachObject(plant, plant_ctx, *red_cube_body, robot_instance);
@@ -218,9 +278,6 @@ int main() {
   };
 
   std::vector<Waypoint> waypoints;
-
-  // Store home configuration for return
-  const Eigen::VectorXd q_home_config = plant.GetPositions(plant_ctx, robot_instance);
 
   // Lift straight up from current grasp location
   const auto cube_pose_after = plant.EvalBodyPoseInWorld(plant_ctx, plant.get_body(*red_cube_body));
