@@ -216,13 +216,21 @@ int main() {
     return true;
   };
 
-  // Simple, reliable transit via home (joint-space)
+  // Simple, reliable transit via home (joint-space) — preserve current gripper DOFs
   auto transit_via_home = [&](bool carrying,
                               const drake::multibody::BodyIndex* attached_body,
                               const drake::math::RigidTransformd* attachment_transform) {
     const Eigen::VectorXd q_current = plant.GetPositions(plant_ctx, robot_instance);
+    Eigen::VectorXd q_target = q_home_config;
+    const int nq = q_current.size();
+    const int arm_dofs = std::min(7, nq);
+    const int gripper_dofs = nq - arm_dofs;
+    if (gripper_dofs > 0 && q_target.size() == nq) {
+      // Keep current gripper positions instead of home (avoid opening while carrying)
+      q_target.tail(gripper_dofs) = q_current.tail(gripper_dofs);
+    }
     ExecuteJointTrajectory(plant, plant_ctx, simulator, robot_instance,
-                           q_current, q_home_config, 2.0, "Transit via home",
+                           q_current, q_target, 2.0, "Transit via home",
                            carrying, attached_body, attachment_transform);
   };
 
@@ -354,6 +362,10 @@ int main() {
         attachment_transform = AttachObject(plant, plant_ctx, object_body, robot_instance);
         object_attached = true;
         carrying_global = true;
+        // Pin gripper closed while carrying
+        const double hold_width = std::max(0.0, final_close_width - 0.002);
+        embed->SetGripperWidth(hold_width);
+        WaitForGripper(simulator, 0.05);
         break;
       }
 
@@ -377,9 +389,13 @@ int main() {
     drake::math::RigidTransformd X_W_lift = cube_pose_after;
     X_W_lift.set_translation(cube_pose_after.translation() + Eigen::Vector3d(0, 0, 0.20));
     X_W_lift.set_rotation(drake::math::RotationMatrixd::MakeXRotation(M_PI));
+    // Re-pin grip before each carry segment
+    embed->SetGripperWidth(std::max(0.0, final_close_width - 0.002));
     (void)move_to_pose(X_W_lift, "Lift cube", true, true, &object_body, &attachment_transform);
 
     const Eigen::Vector3d place_center = place_center_for_stack(stack_index);
+    // Re-pin grip before long transit
+    embed->SetGripperWidth(std::max(0.0, final_close_width - 0.002));
     transit_via_home(true, &object_body, &attachment_transform);
 
     drake::math::RigidTransformd X_W_place_above;
