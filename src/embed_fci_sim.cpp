@@ -393,15 +393,15 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // POSITION CONTROL (only when we have active position commands)
       else if (st.has_position_command && commands_active) {
-        // Motion generator approach: smooth trajectory generation with rate limiting like libfranka-sim
-        // Moderate gains with emphasis on trajectory smoothing rather than high stiffness
-        const double K[7]  = {150,150,150,150,100,80,60};    // Moderate stiffness
-        const double D[7]  = {15,15,15,15,12,10,8};          // Moderate damping
-        const double Ki[7] = {0.5,0.5,0.5,0.5,0.3,0.2,0.1}; // Small integral for steady-state
+        // Motion generator approach: maximum precision tuning
+        // Extremely high gains for sub-degree tracking
+        const double K[7]  = {800,1000,800,800,400,300,200}; // Maximum stiffness for precision
+        const double D[7]  = {60,80,60,60,40,35,25};         // High damping for stability
+        const double Ki[7] = {12,15,12,12,8,6,4};            // Very strong integral action
         
-        // Joint limits for rate limiting (rad/s and rad/s²)
+        // Joint limits for rate limiting (rad/s and rad/s²) - more aggressive
         static const double max_vel[7] = {2.175, 2.175, 2.175, 2.175, 2.61, 2.61, 2.61};
-        static const double max_acc[7] = {15.0, 7.5, 10.0, 12.5, 15.0, 20.0, 20.0};
+        static const double max_acc[7] = {15.0, 15.0, 15.0, 15.0, 20.0, 25.0, 25.0};
         
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
         
@@ -414,8 +414,13 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
           // Compute desired trajectory point with rate limiting
           double q_error = q_target - q_cmd_filtered_[i];
           
-          // Velocity-limited approach to target
+          // Adaptive velocity-limited approach to target - faster convergence for large errors
           double max_step_vel = max_vel[i] * 0.001; // max velocity step per 1ms
+          
+          // Extremely aggressive adaptive scaling for fastest convergence
+          double error_scale = std::min(10.0, 1.0 + 9.0 * std::abs(q_error) / 0.2); // up to 10x faster for errors > 0.2 rad
+          max_step_vel *= error_scale;
+          
           if (q_error > max_step_vel) {
             q_cmd_filtered_[i] += max_step_vel;
           } else if (q_error < -max_step_vel) {
@@ -436,13 +441,24 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
           double pos_error = q_cmd_filtered_[i] - q_current;
           double vel_error = dq_desired - dq_current;
           
-          // Integrate position error with anti-windup
+          // Integrate position error with anti-windup - maximum bounds for precision
           double integ = integral_errors_[i] + pos_error * 0.001;
-          integ = std::clamp(integ, -0.1, 0.1); // tight integral bounds
+          double max_integ = (i < 4) ? 0.8 : 0.5; // maximum integral bounds for heavy joints
+          integ = std::clamp(integ, -max_integ, max_integ);
           integral_errors_[i] = integ;
           
-          // Control law: PD with velocity feed-forward + small integral
-          tau[i] = K[i] * pos_error + D[i] * vel_error + Ki[i] * integ;
+          // Add derivative kick for faster response to command changes
+          static std::array<double, 7> pos_error_prev{{0,0,0,0,0,0,0}};
+          double d_pos_error = (pos_error - pos_error_prev[i]) / 0.001;
+          pos_error_prev[i] = pos_error;
+          
+          // Control law: PID with velocity feed-forward + enhanced derivative kick
+          double derivative_kick = -D[i] * 0.4 * d_pos_error; // 40% derivative on position error change
+          
+          // Add position-dependent gain scheduling for final precision
+          double precision_boost = (std::abs(pos_error) < 0.01) ? 1.5 : 1.0; // 50% gain boost for small errors
+          
+          tau[i] = precision_boost * (K[i] * pos_error + D[i] * vel_error + Ki[i] * integ) + derivative_kick;
           
           // Acceleration limiting on torque output
           static std::array<double, 7> tau_prev{{0,0,0,0,0,0,0}};
