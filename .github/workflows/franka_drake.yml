@@ -46,13 +46,19 @@ jobs:
 
       - name: Build and install libfranka
         run: |
-          git clone --depth 1 --branch 0.13.3 https://github.com/frankaemika/libfranka.git /tmp/libfranka
-          cmake -S /tmp/libfranka -B /tmp/libfranka/build \
+          # Prefer in-repo libfranka if present, otherwise clone upstream with submodules
+          if [ -d libfranka ]; then
+            SRC=libfranka
+          else
+            git clone --depth 1 --recurse-submodules --branch 0.13.3 https://github.com/frankaemika/libfranka.git /tmp/libfranka
+            SRC=/tmp/libfranka
+          fi
+          cmake -S "$SRC" -B "$SRC/build" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/opt/libfranka \
             -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCUMENTATION=OFF
-          cmake --build /tmp/libfranka/build -j"$(nproc)"
-          sudo cmake --install /tmp/libfranka/build
+          cmake --build "$SRC/build" -j"$(nproc)"
+          sudo cmake --install "$SRC/build"
 
       - name: Locate franka_drake directory
         run: |
