@@ -31,10 +31,16 @@ jobs:
           sudo cmake -S "$SRC" -B "$SRC/build"
           sudo cmake --build "$SRC/build" --target install -j"$(nproc)"
 
-      - name: Install Drake (nightly precompiled)
+      - name: Install Drake (precompiled)
         run: |
           UBUNTU_CODENAME=$(lsb_release -cs)
-          curl -L -o drake.tar.gz https://github.com/RobotLocomotion/drake/releases/download/nightly/drake-${UBUNTU_CODENAME}-latest.tar.gz
+          BASE_URL=https://drake-packages.csail.mit.edu/drake
+          case "$UBUNTU_CODENAME" in
+            jammy)  DRAKE_PKG=drake-20250101-jammy.tar.gz ;;
+            noble)  DRAKE_PKG=drake-20250101-noble.tar.gz ;;
+            *) echo "Unsupported Ubuntu codename: $UBUNTU_CODENAME"; exit 1 ;;
+          esac
+          curl -fsSL -o drake.tar.gz "$BASE_URL/nightly/$DRAKE_PKG"
           sudo mkdir -p /opt/drake
           sudo tar -xzf drake.tar.gz -C /opt/drake --strip-components=1
 
