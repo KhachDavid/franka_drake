@@ -140,9 +140,10 @@ class FciSimEmbedder {
   // before using SetGripperWidth. No-op if joints not present.
   void RegisterGripper(const GripperSpec& spec);
 
-  // Command the gripper opening in meters (sum of finger gaps). Clamped to
+  // Command the gripper opening in meters (sum of finger gaps). Optional speed (m/s)
+  // controls how fast the fingers move (rate-limited internally). Clamped to
   // registered min/max. Safe to call at any time.
-  void SetGripperWidth(double width_m);
+  void SetGripperWidth(double width_m, double speed_mps = 0.02);
 
   // Returns the current gripper opening estimate (meters). If unavailable,
   // returns 0.0.

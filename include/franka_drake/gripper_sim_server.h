@@ -18,12 +18,14 @@ class FrankaGripperSimServer {
  public:
   using GetWidthFn = std::function<double()>;                 // meters
   using SetMoveFn = std::function<void(double width, double speed)>;  // meters, m/s
+  using SetGraspFn = std::function<void(double width, double speed, double force, double eps_out)>; // meters, m/s, N, m
   using HomingFn = std::function<void()>;
 
   FrankaGripperSimServer(uint16_t port,
                          GetWidthFn get_width,
                          SetMoveFn set_move,
-                         HomingFn homing);
+                         HomingFn homing,
+                         SetGraspFn set_grasp = nullptr);
   ~FrankaGripperSimServer();
 
   void run();
@@ -50,10 +52,15 @@ class FrankaGripperSimServer {
   GetWidthFn get_width_;
   SetMoveFn set_move_;
   HomingFn homing_;
+  SetGraspFn set_grasp_;
 
   // state
   std::atomic<uint64_t> message_id_{0};
   uint16_t port_;
+  // grasp bookkeeping for UDP state heuristics
+  std::atomic<bool> grasp_active_{false};
+  std::atomic<double> grasp_target_width_{0.0};
+  std::atomic<double> grasp_eps_out_{0.002};
 };
 
 }  // namespace franka_fci_sim

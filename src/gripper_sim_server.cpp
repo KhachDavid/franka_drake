@@ -33,8 +33,9 @@ bool write_exact(int fd, const void* buf, size_t n) {
 FrankaGripperSimServer::FrankaGripperSimServer(uint16_t port,
                                                GetWidthFn get_width,
                                                SetMoveFn set_move,
-                                               HomingFn homing)
-    : get_width_(std::move(get_width)), set_move_(std::move(set_move)), homing_(std::move(homing)), port_(port) {}
+                                               HomingFn homing,
+                                               SetGraspFn set_grasp)
+    : get_width_(std::move(get_width)), set_move_(std::move(set_move)), homing_(std::move(homing)), set_grasp_(std::move(set_grasp)), port_(port) {}
 
 FrankaGripperSimServer::~FrankaGripperSimServer() { stop(); }
 
@@ -130,9 +131,27 @@ void FrankaGripperSimServer::handle_tcp_commands() {
         break;
       }
       case research_interface::gripper::Command::kGrasp: {
-        // Accept and return success for now
-        std::vector<uint8_t> payload(header.size - sizeof(header));
-        if (!payload.empty()) read_exact(tcp_client_fd_, payload.data(), payload.size());
+        // Parse Grasp::Request and drive to requested width using same move callback.
+        double width = 0.0, speed = 0.1, force = 20.0; // defaults
+        double eps_in = 0.0, eps_out = 0.002;
+        if (header.size > sizeof(header)) {
+          std::vector<uint8_t> payload(header.size - sizeof(header));
+          read_exact(tcp_client_fd_, payload.data(), payload.size());
+          const auto* reqp = reinterpret_cast<const research_interface::gripper::Grasp::Request*>(payload.data());
+          width = reqp->width;
+          speed = reqp->speed;
+          force = reqp->force;
+          eps_in = reqp->epsilon.inner;
+          eps_out = reqp->epsilon.outer;
+        }
+        if (set_grasp_) {
+          set_grasp_(width, speed, force, eps_out);
+        } else if (set_move_) {
+          set_move_(width, speed);
+        }
+        grasp_active_.store(true);
+        grasp_target_width_.store(width);
+        grasp_eps_out_.store(eps_out);
         research_interface::gripper::Grasp::Response resp(research_interface::gripper::Grasp::Status::kSuccess);
         CommandHeader h(research_interface::gripper::Command::kGrasp, header.command_id,
                         static_cast<uint32_t>(sizeof(CommandHeader) + sizeof(resp)));
@@ -159,7 +178,14 @@ void FrankaGripperSimServer::udp_state_loop() {
     st.message_id = ++message_id_;
     st.width = get_width_ ? get_width_() : 0.0;
     st.max_width = 0.08;
-    st.is_grasped = false;
+    // Consider grasped if width <= target + epsilon when a grasp is active; otherwise near zero.
+    if (grasp_active_.load()) {
+      double tgt = grasp_target_width_.load();
+      double eps = grasp_eps_out_.load();
+      st.is_grasped = (st.width <= tgt + eps + 1e-4);
+    } else {
+      st.is_grasped = (st.width < 0.002);
+    }
     st.temperature = 0.0;
     // No time field in GripperState here
     sendto(udp_socket_fd_, &st, sizeof(st), 0, (sockaddr*)&udp_client_addr_, sizeof(udp_client_addr_));

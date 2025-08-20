@@ -197,27 +197,23 @@ std::pair<int, int> FciSimEmbedder::Impl::DetectEndEffectorConfiguration() {
       gripper_left_q_index = 7;
       gripper_right_q_index = 8;
     }
-    // Compute within-instance actuation indices by sorting instance joints by velocity_start
+    // Compute within-instance actuation indices using actuator order (matches plant actuation port).
     try {
-      const int nv_inst = plant->num_velocities(robot);
-      std::vector<std::pair<int,int>> vstart_to_local; vstart_to_local.reserve(nv_inst);
-      // Collect all single-DOF joints belonging to the instance
-      for (drake::multibody::JointIndex j(0); j < plant->num_joints(); ++j) {
-        const auto& joint = plant->get_joint(j);
-        if (joint.model_instance() != robot) continue;
-        // Only 1-DoF joints contribute one velocity index
-        if (joint.num_velocities() == 1) {
-          vstart_to_local.emplace_back(joint.velocity_start(), 0);
-        }
+      // Collect actuator order for this instance
+      struct Entry { int ordinal; std::string joint_name; };
+      std::vector<Entry> entries;
+      for (drake::multibody::JointActuatorIndex a(0); a < plant->num_actuators(); ++a) {
+        const auto& act = plant->get_joint_actuator(a);
+        if (act.model_instance() != robot) continue;
+        entries.push_back({static_cast<int>(a), act.joint().name()});
       }
-      std::sort(vstart_to_local.begin(), vstart_to_local.end(), [](auto&a, auto&b){return a.first < b.first;});
-      for (int i = 0; i < static_cast<int>(vstart_to_local.size()); ++i) vstart_to_local[i].second = i;
-      auto local_index_for_vstart = [&](int vstart)->int{
-        for (auto& p : vstart_to_local) if (p.first == vstart) return p.second; return -1; };
-      const auto& jl = plant->GetJointByName("fer_finger_joint1", robot);
-      const auto& jr = plant->GetJointByName("fer_finger_joint2", robot);
-      gripper_left_act_index = local_index_for_vstart(jl.velocity_start());
-      gripper_right_act_index = local_index_for_vstart(jr.velocity_start());
+      std::sort(entries.begin(), entries.end(), [](const Entry& x, const Entry& y){ return x.ordinal < y.ordinal; });
+      auto find_local_index_by_joint_name = [&](const std::string& jn)->int{
+        for (int i = 0; i < static_cast<int>(entries.size()); ++i) if (entries[i].joint_name == jn) return i; return -1; };
+      gripper_left_act_index = find_local_index_by_joint_name("fer_finger_joint1");
+      gripper_right_act_index = find_local_index_by_joint_name("fer_finger_joint2");
+      if (gripper_left_act_index < 0) gripper_left_act_index = num_arm_joints;
+      if (gripper_right_act_index < 0) gripper_right_act_index = num_arm_joints + 1;
     } catch (const std::exception&) {
       gripper_left_act_index = num_arm_joints;
       gripper_right_act_index = num_arm_joints + 1;
@@ -314,6 +310,15 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       const auto& x = this->get_input_port(state_in_).Eval(ctx);
       Eigen::VectorXd q = x.head(total_joints_);
       Eigen::VectorXd dq = x.tail(total_joints_);
+      // Seed the internal setpoint filter with the current joint positions on first use
+      // to avoid a large transient on the first command cycle.
+      static bool q_filter_seeded = false;
+      if (!q_filter_seeded) {
+        for (int i = 0; i < arm_joints_ && i < q.size(); ++i) {
+          q_cmd_filtered_[i] = q[i];
+        }
+        q_filter_seeded = true;
+      }
       plant_->SetPositions(plant_context_.get(), robot_, q.head(total_joints_));
       plant_->SetVelocities(plant_context_.get(), robot_, dq.head(total_joints_));
       // Gravity is provided by external g_comp; controller outputs pure control torques.
@@ -388,25 +393,30 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // POSITION CONTROL (only when we have active position commands)
       else if (st.has_position_command && commands_active) {
-        // Higher joint-space gains + small integral to eliminate steady-state error.
+        // Joint-space PD+I with setpoint rate limiting; gravity handled by external g_comp.
         const double K[7]  = {60,60,60,60,40,30,24};
         const double D[7]  = {20,20,20,20,14,11,9};
-        const double Ki[7] = {6,6,6,6,4,3,2};
+        const double Ki[7] = {4,4,4,4,3,2.5,2};
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
+        // Rate-limit desired q to mimic libfranka shaping.
+        const double max_rate = 1.5; // rad/s
         for (int i = 0; i < arm_joints_; ++i) {
-          double qd = plant_to_franka_sign[i] * st.q_cmd[i];
-          double e = qd - q[i];
-          // Clamp very large step errors to avoid impulsive torques on big setpoint jumps.
-          const double max_pos_err = 0.5;  // rad
+          double qd_target = plant_to_franka_sign[i] * st.q_cmd[i];
+          double qd_prev = q_cmd_filtered_[i];
+          double step = qd_target - qd_prev;
+          double max_step = max_rate * 0.001;
+          if (step > max_step) step = max_step; else if (step < -max_step) step = -max_step;
+          q_cmd_filtered_[i] = qd_prev + step;
+          double e = q_cmd_filtered_[i] - q[i];
+          const double max_pos_err = 0.4;  // rad
           if (e > max_pos_err) e = max_pos_err; else if (e < -max_pos_err) e = -max_pos_err;
-          double v = dq[i];
+          double vj = dq[i];
           const double max_velocity = 1.0; // rad/s safety clamp
-          if (std::abs(v) > max_velocity) v = (v > 0) ? max_velocity : -max_velocity;
-          // Integrate error with 1 kHz timestep, clamp to prevent windup.
+          if (std::abs(vj) > max_velocity) vj = (vj > 0) ? max_velocity : -max_velocity;
           double integ = integral_errors_[i] + e * 0.001;
           if (integ > 0.5) integ = 0.5; else if (integ < -0.5) integ = -0.5;
           integral_errors_[i] = integ;
-          tau[i] = K[i] * e - D[i] * v + Ki[i] * integral_errors_[i];
+          tau[i] = K[i] * e - D[i] * vj + Ki[i] * integral_errors_[i];
         }
       } else {
         // Idle: zero from controller; g_comp holds posture.
@@ -433,9 +443,9 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         // Simple P-D control for prismatic fingers to track desired width.
         // For prismatic with non-negative limits, both joints target +w/2; axis orientation handles direction.
         double w = std::clamp(st.gripper_target_width, st.gripper_min_width, st.gripper_max_width);
-        // Desired opening split equally; account for joint axis signs.
-        double qL_des = st.gripper_left_sign * (w * 0.5);
-        double qR_des = st.gripper_right_sign * (w * 0.5);
+        // Desired opening split equally; both prismatic joint coordinates are positive (0..0.04).
+        double qL_des = (w * 0.5);
+        double qR_des = (w * 0.5);
         const int iL = gripper_left_act_index_;
         const int iR = gripper_right_act_index_;
         if (iL >= 0 && iR >= 0 && iL < nu_robot_ && iR < nu_robot_) {
@@ -447,10 +457,10 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
             double qR = q[qR_idx];
             double vL = dq[qL_idx];
             double vR = dq[qR_idx];
-            double eL = qL - qL_des;
-            double eR = qR - qR_des;
-            tau_out[iL] = -st.gripper_kp * eL - st.gripper_kd * vL;
-            tau_out[iR] = -st.gripper_kp * eR - st.gripper_kd * vR;
+            double eL = qL_des - qL;
+            double eR = qR_des - qR;
+            tau_out[iL] = st.gripper_kp * eL - st.gripper_kd * vL;
+            tau_out[iR] = st.gripper_kp * eR - st.gripper_kd * vR;
           }
         }
       }
@@ -470,6 +480,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
     mutable std::unique_ptr<drake::systems::Context<double>> plant_context_;
     mutable Eigen::VectorXd integral_errors_;
     mutable Eigen::VectorXd velocity_integral_errors_;
+    mutable std::array<double,7> q_cmd_filtered_{{0,0,0,0,0,0,0}};
     std::vector<int> arm_velocity_indices_;
   };
 
@@ -736,8 +747,9 @@ void FciSimEmbedder::StartServer(uint16_t tcp_port, uint16_t udp_port) {
   using research_interface::gripper::kCommandPort;
   impl_->gripper_server = std::make_unique<FrankaGripperSimServer>(kCommandPort,
       [](){ return GetSharedState().gripper_q[0] + GetSharedState().gripper_q[1]; },
-      [this](double width, double speed){ (void)speed; this->SetGripperWidth(width); },
-      [this](){ this->SetGripperWidth(GetSharedState().gripper_max_width); });
+      [this](double width, double speed){ this->SetGripperWidth(width); /* speed handled internally */ },
+      [this](){ this->SetGripperWidth(GetSharedState().gripper_max_width); },
+      [this](double width, double speed, double force, double eps_out){ (void)eps_out; this->SetGripperWidth(width); /* force could scale gains if needed */ });
   std::thread([srv = impl_->gripper_server.get()](){ srv->run(); }).detach();
 }
 
@@ -768,10 +780,12 @@ void FciSimEmbedder::RegisterGripper(const GripperSpec& spec) {
   st.gripper_right_sign = spec.right_sign;
 }
 
-void FciSimEmbedder::SetGripperWidth(double width_m) {
+void FciSimEmbedder::SetGripperWidth(double width_m, double speed_mps) {
   auto& st = GetSharedState();
   std::lock_guard<std::mutex> lock(st.mutex);
-  st.gripper_target_width = std::clamp(width_m, st.gripper_min_width, st.gripper_max_width);
+  (void)speed_mps; // speed is not used in this immediate-set implementation
+  const double w_des = std::clamp(width_m, st.gripper_min_width, st.gripper_max_width);
+  st.gripper_target_width = w_des;  // set immediately so single calls take effect
   st.gripper_target_user_set = true;
 }
 

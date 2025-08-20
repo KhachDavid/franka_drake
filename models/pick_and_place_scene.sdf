@@ -27,6 +27,33 @@
       </link>
     </model>
 
+    <!-- Raised work platform (1 inch = 0.0254 m) in front of the robot -->
+    <model name="work_platform">
+      <static>true</static>
+      <!-- Centered at x=0.4 so the robot base at the world origin is not on the platform -->
+      <pose>0.3 0 0.0127 0 0 0</pose>
+      <link name="platform_link">
+        <visual name="platform_visual">
+          <geometry>
+            <box>
+              <size>1.0 1.0 0.0254</size>
+            </box>
+          </geometry>
+          <material>
+            <ambient>0.6 0.6 0.6 1</ambient>
+            <diffuse>0.6 0.6 0.6 1</diffuse>
+          </material>
+        </visual>
+        <collision name="platform_collision">
+          <geometry>
+            <box>
+              <size>1.0 1.0 0.0254</size>
+            </box>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+
     <!-- Conveyor belt (simplified as static platform) -->
     <model name="conveyor">
       <static>true</static>
@@ -58,11 +85,13 @@
       <pose>0.39 -0.175 0.08 0 0 0</pose>
       <link name="box_link">
         <inertial>
-          <mass>0.2</mass>
+          <!-- 4 cm cube at PP (density ~1050 kg/m^3) => m ≈ 0.04^3 * 1050 ≈ 0.0672 kg -->
+          <mass>0.07</mass>
+          <!-- Solid cube inertia: I = (1/6) m a^2, a = 0.04 m; I ≈ (1/6)*0.07*0.0016 ≈ 1.8667e-5 -->
           <inertia>
-            <ixx>0.0005</ixx>
-            <iyy>0.0005</iyy>
-            <izz>0.0005</izz>
+            <ixx>1.87e-05</ixx>
+            <iyy>1.87e-05</iyy>
+            <izz>1.87e-05</izz>
             <ixy>0</ixy>
             <ixz>0</ixz>
             <iyz>0</iyz>
@@ -86,12 +115,19 @@
             </box>
           </geometry>
           <surface>
+            <!-- Increase friction to improve grasp stability; add restitution damping off -->
             <friction>
               <ode>
-                <mu>0.8</mu>
-                <mu2>0.8</mu2>
+                <mu>1.2</mu>
+                <mu2>1.2</mu2>
               </ode>
             </friction>
+            <contact>
+              <ode>
+                <kp>2.0e5</kp>
+                <kd>1.0</kd>
+              </ode>
+            </contact>
           </surface>
         </collision>
       </link>

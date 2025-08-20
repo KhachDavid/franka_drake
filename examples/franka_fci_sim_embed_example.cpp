@@ -51,7 +51,7 @@ int main() {
   gripper_spec.kp = 200.0;
   gripper_spec.kd = 5.0;
   gripper_spec.left_sign = +1.0;
-  gripper_spec.right_sign = +1.0;
+  gripper_spec.right_sign = -1.0;  // Right finger prismatic axis is -Y
   embed->RegisterGripper(gripper_spec);
   embed->SetGripperWidth(0.005);
 
