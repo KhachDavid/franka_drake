@@ -30,7 +30,7 @@
     <!-- Conveyor belt (simplified as static platform) -->
     <model name="conveyor">
       <static>true</static>
-      <pose>-0.5 0 0.4 0 0 0</pose>
+      <pose>-0.75 0 0.4 0 0 0</pose>
       <link name="belt">
         <visual name="visual">
           <geometry>
@@ -186,7 +186,7 @@
     <!-- Target placement zones on conveyor -->
     <model name="target_zone_1">
       <static>true</static>
-      <pose>-0.5 -0.3 0.425 0 0 0</pose>
+      <pose>-0.75 -0.3 0.425 0 0 0</pose>
       <link name="zone">
         <visual name="visual">
           <geometry>
@@ -204,7 +204,7 @@
 
     <model name="target_zone_2">
       <static>true</static>
-      <pose>-0.5 0 0.425 0 0 0</pose>
+      <pose>-0.75 0 0.425 0 0 0</pose>
       <link name="zone">
         <visual name="visual">
           <geometry>
@@ -222,7 +222,7 @@
 
     <model name="target_zone_3">
       <static>true</static>
-      <pose>-0.5 0.3 0.425 0 0 0</pose>
+      <pose>-0.75 0.3 0.425 0 0 0</pose>
       <link name="zone">
         <visual name="visual">
           <geometry>

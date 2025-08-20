@@ -141,18 +141,17 @@ drake::math::RigidTransformd AttachObject(
   const auto& ee_frame = plant.GetFrameByName("fer_hand_tcp", robot);
   const auto& world_frame = plant.world_frame();
 
-  drake::math::RigidTransformd X_EE_Obj;
-  X_EE_Obj.set_translation(Eigen::Vector3d(0, 0, 0.02));
-  X_EE_Obj.set_rotation(drake::math::RotationMatrixd::Identity());
-
+  // Compute the attachment transform from the object's current pose to avoid any jump/drop.
   const auto X_W_EE = plant.CalcRelativeTransform(plant_ctx, world_frame, ee_frame);
-  const auto X_W_Obj = X_W_EE * X_EE_Obj;
   const auto& body = plant.get_body(object_body);
-  plant.SetFreeBodyPose(&plant_ctx, body, X_W_Obj);
+  const auto X_W_Obj_current = plant.EvalBodyPoseInWorld(plant_ctx, body);
+  const drake::math::RigidTransformd X_EE_Obj = X_W_EE.inverse() * X_W_Obj_current;
+
+  // Re-set the pose to the exact same value (idempotent) and zero its velocity.
+  plant.SetFreeBodyPose(&plant_ctx, body, X_W_Obj_current);
   plant.SetFreeBodySpatialVelocity(&plant_ctx, body, drake::multibody::SpatialVelocity<double>::Zero());
 
-  std::cout << "  Grasping " << plant.get_body(object_body).name() << " between gripper fingers" << std::endl;
-  std::cout << "  Cube held 2cm forward of TCP (visible between fingers)" << std::endl;
+  std::cout << "  Grasping " << plant.get_body(object_body).name() << " (frozen relative to TCP)" << std::endl;
   return X_EE_Obj;
 }
 
