@@ -234,43 +234,17 @@ int main() {
                            carrying, attached_body, attachment_transform);
   };
 
-  // Helper: target place pose on conveyor for stack index (based on zone center for XY)
+  // Stack plan: center XY from zone; deterministic top surface based on last drop
   Eigen::Vector2d stack_xy_base(-0.60, 0.0);
   if (auto zone_xy = get_zone_center_xy()) stack_xy_base = *zone_xy;
-  auto place_center_for_stack = [&](int stack_idx) -> Eigen::Vector3d {
-    const double belt_top_z = 0.425;          // from SDF target zones (approx)
-    const double cube_h = 0.04;               // cube size
-    const double cube_half = cube_h * 0.5;
-    const double z_center = belt_top_z + cube_half + stack_idx * cube_h;
-    return Eigen::Vector3d(stack_xy_base.x(), stack_xy_base.y(), z_center);
-  };
-
-  // Helper: align payload XY quickly via one or two larger TCP corrections
-  auto align_payload_xy = [&](const drake::multibody::BodyIndex& object_body,
-                              const drake::math::RigidTransformd& attachment_transform,
-                              const Eigen::Vector2d& target_xy) -> bool {
-    const int max_iter = 2;               // at most two quick corrections
-    const double tol = 0.006;             // 6 mm tolerance
-    const double max_step = 0.03;         // up to 3 cm per correction
-    for (int it = 0; it < max_iter; ++it) {
-      const auto X_W_EE = plant.CalcRelativeTransform(plant_ctx, world_frame, ee_frame);
-      const auto X_W_Obj = plant.EvalBodyPoseInWorld(plant_ctx, plant.get_body(object_body));
-      const Eigen::Vector2d err(X_W_Obj.translation().x() - target_xy.x(),
-                                X_W_Obj.translation().y() - target_xy.y());
-      if (err.norm() < tol) return true;
-      Eigen::Vector3d new_t = X_W_EE.translation();
-      const double scale = std::min(1.0, max_step / std::max(1e-6, err.norm()));
-      new_t.x() -= err.x() * scale;  // move TCP toward target
-      new_t.y() -= err.y() * scale;
-      drake::math::RigidTransformd X_W_target(X_W_EE.rotation(), new_t);
-      // Fast move: shorter duration (0.8s)
-      (void)move_to_pose(X_W_target, "Align payload XY (fast)", true, true, &object_body, &attachment_transform, 0.8);
-    }
-    // Final check
-    const auto X_W_Obj_f = plant.EvalBodyPoseInWorld(plant_ctx, plant.get_body(object_body));
-    const Eigen::Vector2d err_f(X_W_Obj_f.translation().x() - target_xy.x(), X_W_Obj_f.translation().y() - target_xy.y());
-    return err_f.norm() < 0.01;  // accept within 1 cm
-  };
+  double stack_top_z_surface = 0.425;  // default; overridden by zone height if present
+  try {
+    const auto mdl = plant.GetModelInstanceByName("target_zone_2");
+    const auto& body = plant.GetBodyByName("zone", mdl);
+    stack_top_z_surface = plant.EvalBodyPoseInWorld(plant_ctx, body).translation().z();
+  } catch (...) {}
+  const double cube_h = 0.04;
+  const double drop_offset = 0.02;  // 2 cm drop
 
   // Order: RGB
   std::vector<std::string> order = {"box_red", "box_green", "box_blue"};
@@ -384,7 +358,7 @@ int main() {
       continue;
     }
 
-    // Post-grasp: lift → transit via home → place stack (hover) → align XY → detach → retreat
+    // Post-grasp: lift → transit via home → deterministic drop at target → retreat
     const auto cube_pose_after = plant.EvalBodyPoseInWorld(plant_ctx, plant.get_body(object_body));
     drake::math::RigidTransformd X_W_lift = cube_pose_after;
     X_W_lift.set_translation(cube_pose_after.translation() + Eigen::Vector3d(0, 0, 0.20));
@@ -393,40 +367,41 @@ int main() {
     embed->SetGripperWidth(std::max(0.0, final_close_width - 0.002));
     (void)move_to_pose(X_W_lift, "Lift cube", true, true, &object_body, &attachment_transform);
 
-    const Eigen::Vector3d place_center = place_center_for_stack(stack_index);
-    // Re-pin grip before long transit
+    // Compute deterministic target and hover for drop
+    const double target_center_z = stack_top_z_surface + cube_h * 0.5;
+    const Eigen::Vector3d target_center(stack_xy_base.x(), stack_xy_base.y(), target_center_z);
+    const Eigen::Vector3d hover_center = target_center + Eigen::Vector3d(0, 0, drop_offset);
+
+    // Transit via home to avoid collisions
     embed->SetGripperWidth(std::max(0.0, final_close_width - 0.002));
     transit_via_home(true, &object_body, &attachment_transform);
 
-    drake::math::RigidTransformd X_W_place_above;
-    X_W_place_above.set_translation(place_center + Eigen::Vector3d(0, 0, 0.20));
-    X_W_place_above.set_rotation(drake::math::RotationMatrixd::MakeXRotation(M_PI));
-    (void)move_to_pose(X_W_place_above, "Move to place position", true, true, &object_body, &attachment_transform);
+    drake::math::RigidTransformd X_W_hover;
+    X_W_hover.set_translation(hover_center);
+    X_W_hover.set_rotation(drake::math::RotationMatrixd::MakeXRotation(M_PI));
+    (void)move_to_pose(X_W_hover, "Hover above stack center (drop)", true, true, &object_body, &attachment_transform);
 
-    // Hover 3 cm above final center to avoid pushing existing stack
-    drake::math::RigidTransformd X_W_place_hover;
-    X_W_place_hover.set_translation(place_center + Eigen::Vector3d(0, 0, 0.03));
-    X_W_place_hover.set_rotation(drake::math::RotationMatrixd::MakeXRotation(M_PI));
-    (void)move_to_pose(X_W_place_hover, "Hover above stack", true, true, &object_body, &attachment_transform);
-
-    // Align precisely in XY to stack center before detaching (fast)
-    const bool aligned = align_payload_xy(object_body, attachment_transform, Eigen::Vector2d(place_center.x(), place_center.y()));
-
-    // Detach at current pose (no teleport). If not aligned, we still detach where it is to avoid artificial jumps.
+    // Detach at exact zone center and open to drop deterministically
     {
-      const auto X_W_Obj_now = plant.EvalBodyPoseInWorld(plant_ctx, plant.get_body(object_body));
-      DetachObject(plant, plant_ctx, object_body, X_W_Obj_now);
+      drake::math::RigidTransformd X_W_Obj_final;
+      X_W_Obj_final.set_translation(target_center);
+      X_W_Obj_final.set_rotation(drake::math::RotationMatrixd::Identity());
+      DetachObject(plant, plant_ctx, object_body, X_W_Obj_final);
     }
     embed->SetGripperWidth(0.07);
-    WaitForGripper(simulator, 0.1);
+    WaitForGripper(simulator, 0.15);  // brief settle
 
-    drake::math::RigidTransformd X_W_retreat = X_W_place_hover;
-    X_W_retreat.set_translation(X_W_place_hover.translation() + Eigen::Vector3d(0, 0, 0.15));
-    (void)move_to_pose(X_W_retreat, "Retreat after placing", false, false, nullptr, nullptr);
+    // Deterministically increment the stack surface
+    stack_top_z_surface += cube_h;
+
+    // Retreat
+    drake::math::RigidTransformd X_W_retreat = X_W_hover;
+    X_W_retreat.set_translation(hover_center + Eigen::Vector3d(0, 0, 0.15));
+    (void)move_to_pose(X_W_retreat, "Retreat after drop", false, false, nullptr, nullptr);
 
     carrying_global = false;
 
-    // After first placement, lock future stack XY to the actually placed center for robustness
+    // After first placement, fix stack XY to the first cube's actual center
     if (stack_index == 0) {
       const auto X_W_Placed = plant.EvalBodyPoseInWorld(plant_ctx, plant.get_body(object_body));
       stack_xy_base = Eigen::Vector2d(X_W_Placed.translation().x(), X_W_Placed.translation().y());
