@@ -2,13 +2,10 @@ name: franka_drake CI
 
 on:
   push:
-    paths:
-      - 'franka_drake/**'
-      - '.github/workflows/franka_drake.yml'
+    branches: [ main ]
   pull_request:
-    paths:
-      - 'franka_drake/**'
-      - '.github/workflows/franka_drake.yml'
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build-and-test:
