@@ -294,17 +294,22 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
 
       // TORQUE CONTROL: pass-through minus gravity (matches app high limits, no rate limit)
       if (st.has_torque_command) {
-        // Match app behavior: subtract gravity, clamp to high limits, and return early (no rate limit)
-        Eigen::VectorXd tau_g = plant_->CalcGravityGeneralizedForces(*plant_context_);
+        // External torque control: pass user torques; gravity compensation is added outside via g_comp.
         static const std::array<double, 7> high_limits{87.0,87.0,87.0,87.0,50.0,50.0,40.0};
         for (int i = 0; i < arm_joints_; ++i) {
-          double t = st.tau_cmd[i] - tau_g[i];
+          double t = st.tau_cmd[i];
           t = std::clamp(t, -high_limits[i], high_limits[i]);
           tau[i] = t;
         }
         integral_errors_.setZero();
         velocity_integral_errors_.setZero();
-        out->SetFromVector(tau);
+        // Compose output vector sized to actuation inputs (arm + optional gripper).
+        Eigen::VectorXd tau_out = Eigen::VectorXd::Zero(nu_robot_);
+        for (int i = 0; i < std::min(arm_joints_, nu_robot_); ++i) {
+          tau_out[i] = tau[i];
+        }
+        // Leave any extra actuators (e.g., gripper) at zero torque during external torque control.
+        out->SetFromVector(tau_out);
         return;
       }
       // VELOCITY CONTROL (slightly lower gains to reduce chatter with client PI)
@@ -350,14 +355,15 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // POSITION CONTROL (only when we have active position commands)
       else if (st.has_position_command && commands_active) {
-        const double K[7] = {55,55,55,55,38,28,24};
-        const double D[7] = {20,20,20,20,14,12,10};
+        // Gains tuned to be firm but stable; reduce compared to previous to avoid overshoot.
+        const double K[7] = {40,40,40,40,28,22,18};
+        const double D[7] = {14,14,14,14,10,9,8};
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
         for (int i = 0; i < arm_joints_; ++i) {
           double qd = plant_to_franka_sign[i] * st.q_cmd[i];
           double e = qd - q[i];
           double v = dq[i];
-          const double max_velocity = 1.5; // rad/s safety clamp
+          const double max_velocity = 1.0; // rad/s safety clamp
           if (std::abs(v) > max_velocity) v = (v > 0) ? max_velocity : -max_velocity;
           tau[i] = K[i] * e - D[i] * v;
         }
@@ -385,17 +391,25 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         // Simple P-D control for prismatic fingers to track desired width.
         // For prismatic with non-negative limits, both joints target +w/2; axis orientation handles direction.
         double w = std::clamp(st.gripper_target_width, st.gripper_min_width, st.gripper_max_width);
-        double qL_des = (w * 0.5);
-        double qR_des = (w * 0.5);
+        // Desired opening split equally; account for joint axis signs.
+        double qL_des = st.gripper_left_sign * (w * 0.5);
+        double qR_des = st.gripper_right_sign * (w * 0.5);
         const int iL = gripper_left_act_index_;
         const int iR = gripper_right_act_index_;
         if (iL >= 0 && iR >= 0 && iL < nu_robot_ && iR < nu_robot_) {
-          double eL = q[iL] - qL_des;
-          double eR = q[iR] - qR_des;
-          double vL = dq[iL];
-          double vR = dq[iR];
-          tau_out[iL] = -st.gripper_kp * eL - st.gripper_kd * vL;
-          tau_out[iR] = -st.gripper_kp * eR - st.gripper_kd * vR;
+          // Use position indices to read joint states; actuation indices only for torque output slots.
+          const int qL_idx = gripper_left_q_index_;
+          const int qR_idx = gripper_right_q_index_;
+          if (qL_idx >= 0 && qR_idx >= 0 && qL_idx < q.size() && qR_idx < q.size()) {
+            double qL = q[qL_idx];
+            double qR = q[qR_idx];
+            double vL = dq[qL_idx];
+            double vR = dq[qR_idx];
+            double eL = qL - qL_des;
+            double eR = qR - qR_des;
+            tau_out[iL] = -st.gripper_kp * eL - st.gripper_kd * vL;
+            tau_out[iR] = -st.gripper_kp * eR - st.gripper_kd * vR;
+          }
         }
       }
 
@@ -438,11 +452,16 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
   builder->Connect(g_comp->get_output_port(), demux_full->get_input_port());
 
   if (nu_robot == nv_robot) {
+    // Gravity generalized forces for this instance match actuation size; wire directly.
     builder->Connect(demux_full->get_output_port(0), torque_adder->get_input_port(0));
   } else {
-    auto* demux_robot = builder->AddSystem<drake::systems::Demultiplexer<double>>(std::vector<int>{num_arm_joints, nv_robot - num_arm_joints});
-    builder->Connect(demux_full->get_output_port(0), demux_robot->get_input_port());
-    builder->Connect(demux_robot->get_output_port(0), torque_adder->get_input_port(0));
+    // Instance has more DOFs than actuators (or vice versa). Select the first nu_robot components
+    // of the instance gravity vector to match the actuation input size. This covers typical cases
+    // where unactuated joints are present.
+    DRAKE_DEMAND(nu_robot <= nv_robot);
+    auto* demux_match = builder->AddSystem<drake::systems::Demultiplexer<double>>(std::vector<int>{nu_robot, nv_robot - nu_robot});
+    builder->Connect(demux_full->get_output_port(0), demux_match->get_input_port());
+    builder->Connect(demux_match->get_output_port(0), torque_adder->get_input_port(0));
   }
 
   builder->Connect(ctrl->get_output_port(), torque_adder->get_input_port(1));
@@ -568,12 +587,19 @@ void FciSimEmbedder::Impl::HandleRobotCommand(const protocol::RobotCommand& cmd)
   st.O_dP_EE_cmd = cmd.motion.O_dP_EE_c;
   st.elbow_cmd = cmd.motion.elbow_c;
   st.last_command_time = std::chrono::steady_clock::now();
-  bool has_pos = false;
-  for (int i = 0; i < 7; ++i) {
-    if (std::abs(cmd.motion.q_c[i]) > 0.0) { has_pos = true; break; }
-  }
-  st.has_position_command = has_pos && st.current_motion_mode == protocol::Move::MotionGeneratorMode::kJointPosition;
+  // Engage the appropriate controller branch purely based on requested motion/controller modes.
   st.has_torque_command = (st.current_controller_mode == protocol::Move::ControllerMode::kExternalController);
+  st.has_position_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kJointPosition);
+  st.has_velocity_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kJointVelocity);
+  st.has_cartesian_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kCartesianPosition);
+  st.has_cartesian_velocity_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kCartesianVelocity);
+  // Clear motion flags when the client indicates motion generation finished.
+  if (cmd.motion.motion_generation_finished) {
+    st.has_position_command = false;
+    st.has_velocity_command = false;
+    st.has_cartesian_command = false;
+    st.has_cartesian_velocity_command = false;
+  }
 }
 
 // Public FciSimEmbedder

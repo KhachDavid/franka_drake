@@ -21,6 +21,7 @@
 #include <thread>
 #include <chrono>
 #include <optional>
+#include <cstdlib>
 
 #include "franka_drake/fci_sim_embed.h"
 
@@ -36,6 +37,10 @@ using franka_fci_sim::manipulation::WaitForGripper;
 
 int main() {
   const double dt = 0.001; // 1 kHz
+  const bool bench = (std::getenv("FRD_BENCH") != nullptr);
+  const bool headless_env = (std::getenv("HEADLESS") != nullptr);
+  const bool turbo_env = (std::getenv("TURBO") != nullptr);
+
   drake::systems::DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, dt);
 
@@ -58,8 +63,8 @@ int main() {
   auto_opts.disable_collisions = true;  // Disable self-collisions for robot
   
   franka_fci_sim::FciSimOptions opts;
-  opts.headless = false;
-  opts.turbo = true;  // run as fast as possible
+  opts.headless = headless_env;           // HEADLESS=1 to run headless
+  opts.turbo = true || turbo_env;         // always turbo; TURBO env kept for clarity
   
   auto embed = franka_fci_sim::FciSimEmbedder::AutoAttach(&plant, &scene_graph, &builder, auto_opts, opts);
 
@@ -76,9 +81,12 @@ int main() {
   gripper_spec.right_sign = -1.0;  // Right finger moves in opposite direction (negative Y axis)
   embed->RegisterGripper(gripper_spec);
 
-  // Meshcat visualization (added before build)
-  auto meshcat = std::make_shared<drake::geometry::Meshcat>();
-  drake::visualization::AddDefaultVisualization(&builder, meshcat);
+  // Meshcat visualization (headless-aware)
+  std::shared_ptr<drake::geometry::Meshcat> meshcat;
+  if (!opts.headless) {
+    meshcat = std::make_shared<drake::geometry::Meshcat>();
+    drake::visualization::AddDefaultVisualization(&builder, meshcat);
+  }
 
   // Find the robot (no context yet)
   const auto& robot_instance = plant.GetBodyByName("fer_link1").model_instance();
@@ -129,8 +137,12 @@ int main() {
 
   simulator.Initialize();
 
+  // Benchmark timing start
+  const auto wall_start = std::chrono::steady_clock::now();
+  const double sim_start = simulator.get_context().get_time();
+
   embed->SetGripperWidth(0.08);  // Open and keep open until grasp phases
-  WaitForGripper(simulator, 0.5);
+  WaitForGripper(simulator, opts.turbo ? 0.01 : 0.5);
 
   // Helper: find a specific box body by model name (handles nested names like "pick_and_place_scene::box_red")
   auto find_box_body = [&](const std::string& model_name) -> std::optional<drake::multibody::BodyIndex> {
@@ -419,6 +431,18 @@ int main() {
   
   // Keep simulation running
   while (true) {
+    if (bench) {
+      const auto wall_end = std::chrono::steady_clock::now();
+      const double sim_end = simulator.get_context().get_time();
+      const double sim_elapsed = sim_end - sim_start;
+      const double wall_elapsed = std::chrono::duration<double>(wall_end - wall_start).count();
+      const double rtf = (wall_elapsed > 0.0) ? (sim_elapsed / wall_elapsed) : 0.0;
+      std::cout << "\nBenchmark results:" << std::endl;
+      std::cout << "  Sim elapsed: " << sim_elapsed << " s" << std::endl;
+      std::cout << "  Wall elapsed: " << wall_elapsed << " s" << std::endl;
+      std::cout << "  RTF: " << rtf << std::endl;
+      return 0;
+    }
     simulator.AdvanceTo(simulator.get_context().get_time() + dt);
     std::this_thread::sleep_for(std::chrono::microseconds(50));
   }

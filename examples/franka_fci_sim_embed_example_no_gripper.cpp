@@ -1,5 +1,5 @@
 // Pick and place scene example: load a static pick and place scene SDF into SceneGraph,
-// embed a Franka robot using FciSimEmbedder, add Meshcat viz, and run.
+// embed a Franka robot using FciSimEmbedder (fingerless configuration), add Meshcat viz, and run.
 
 #include <drake/multibody/plant/multibody_plant.h>
 #include <drake/multibody/parsing/parser.h>
@@ -33,27 +33,16 @@ int main() {
     }
   }
 
-  // Auto-attach the Franka robot (fingerless by default), disable collisions.
+  // Auto-attach the Franka robot (fingerless configuration), disable collisions.
   franka_fci_sim::FciSimEmbedder::AutoAttachOptions auto_opts;
-  auto_opts.prefer_gripper = true;
+  auto_opts.prefer_gripper = false;  // Use fingerless configuration
   auto_opts.disable_collisions = true;
   franka_fci_sim::FciSimOptions opts;
   opts.headless = false;
   opts.turbo = false;
   auto embed = franka_fci_sim::FciSimEmbedder::AutoAttach(&plant, &scene_graph, &builder, auto_opts, opts);
 
-  // Register the gripper and set an initial opening width
-  franka_fci_sim::FciSimEmbedder::GripperSpec gripper_spec;
-  gripper_spec.left_joint_name = "fer_finger_joint1";
-  gripper_spec.right_joint_name = "fer_finger_joint2";
-  gripper_spec.min_width_m = 0.0;
-  gripper_spec.max_width_m = 0.08;
-  gripper_spec.kp = 200.0;
-  gripper_spec.kd = 5.0;
-  gripper_spec.left_sign = +1.0;
-  gripper_spec.right_sign = +1.0;
-  embed->RegisterGripper(gripper_spec);
-  embed->SetGripperWidth(0.005);
+  // Note: No gripper registration needed for fingerless configuration
 
   // Meshcat visualization
   auto meshcat = std::make_shared<drake::geometry::Meshcat>();
@@ -73,8 +62,9 @@ int main() {
   // Robot TCP remains 1337; robot UDP is moved to 1340; gripper uses its own port (1338) separately.
   embed->StartServer(1337, 1340);
 
-  std::cout << "Pick and place scene example running. Meshcat: http://localhost:7000\n";
-  std::cout << "Franka FCI robot at 127.0.0.1:1337 (TCP), UDP 1340; gripper at 1338\n";
+  std::cout << "Pick and place scene example (fingerless) running. Meshcat: http://localhost:7000\n";
+  std::cout << "Franka FCI server at 127.0.0.1:1337 (TCP), UDP 1340; gripper at 1338\n";
+  std::cout << "This example uses the fingerless robot configuration (no gripper)\n";
 
   for (;;) {
     simulator.AdvanceTo(simulator.get_context().get_time() + dt);

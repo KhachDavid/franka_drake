@@ -17,3 +17,13 @@ set_target_properties(pick_and_place_drake_controller PROPERTIES
 install(TARGETS pick_and_place_drake_controller
     RUNTIME DESTINATION bin
 )
+
+# Drake-based pick and place controller (fingerless configuration)
+add_executable(franka_fci_sim_embed_example_no_gripper franka_fci_sim_embed_example_no_gripper.cpp)
+target_link_libraries(franka_fci_sim_embed_example_no_gripper franka_drake_core)
+set_target_properties(franka_fci_sim_embed_example_no_gripper PROPERTIES
+    OUTPUT_NAME "franka-fci-sim-embed-example-no-gripper"
+)
+install(TARGETS franka_fci_sim_embed_example_no_gripper
+    RUNTIME DESTINATION bin
+)
