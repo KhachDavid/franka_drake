@@ -229,32 +229,8 @@ int main() {
     
     // Handle gripper width changes
     if (waypoint.gripper_width >= 0) {
-      std::cout << "  Setting gripper to " << waypoint.gripper_width*1000 << "mm..." << std::endl;
-      
-      // Debug: Print current gripper joint positions before
-      try {
-        const auto& left_joint = plant.GetJointByName("fer_finger_joint1", robot_instance);
-        const auto& right_joint = plant.GetJointByName("fer_finger_joint2", robot_instance); 
-        const auto q = plant.GetPositions(plant_ctx);
-        const double left_pos = q[left_joint.position_start()];
-        const double right_pos = q[right_joint.position_start()];
-        std::cout << "    Before: left=" << left_pos << "rad, right=" << right_pos << "rad" << std::endl;
-      } catch (...) {}
-      
       embed->SetGripperWidth(waypoint.gripper_width);
-      // Wait for gripper to move while keeping simulation running
       WaitForGripper(simulator, 2.0);  // Give gripper 2 seconds to reach position
-      
-      // Debug: Print gripper joint positions after
-      try {
-        const auto& left_joint = plant.GetJointByName("fer_finger_joint1", robot_instance);
-        const auto& right_joint = plant.GetJointByName("fer_finger_joint2", robot_instance);
-        const auto q = plant.GetPositions(plant_ctx);
-        const double left_pos = q[left_joint.position_start()];
-        const double right_pos = q[right_joint.position_start()];
-        std::cout << "    After: left=" << left_pos << "rad, right=" << right_pos << "rad" << std::endl;
-        std::cout << "    Actual width: " << embed->GetGripperWidth()*1000 << "mm" << std::endl;
-      } catch (...) {}
     }
     
     // Get current robot configuration
