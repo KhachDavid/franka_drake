@@ -273,6 +273,37 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       plant_context_ = plant_->CreateDefaultContext();
       integral_errors_ = Eigen::VectorXd::Zero(arm_joints_);
       velocity_integral_errors_ = Eigen::VectorXd::Zero(arm_joints_);
+      // Build mapping from arm joints to full-plant velocity indices for gravity selection.
+      arm_velocity_indices_.clear();
+      arm_velocity_indices_.reserve(arm_joints_);
+      // Try by known names first
+      bool names_ok = true;
+      for (int i = 1; i <= arm_joints_; ++i) {
+        std::string name = std::string("fer_joint") + std::to_string(i);
+        try {
+          const auto& joint = plant_->GetJointByName(name, robot_);
+          arm_velocity_indices_.push_back(joint.velocity_start());
+        } catch (const std::exception&) {
+          names_ok = false; break;
+        }
+      }
+      if (!names_ok || static_cast<int>(arm_velocity_indices_.size()) != arm_joints_) {
+        arm_velocity_indices_.clear();
+        // Fallback: collect single-dof non-gripper joints of this instance, sort by velocity_start
+        std::vector<std::pair<int, std::string>> vstart_name;
+        for (drake::multibody::JointIndex j(0); j < plant_->num_joints(); ++j) {
+          const auto& joint = plant_->get_joint(j);
+          if (joint.model_instance() != robot_) continue;
+          if (joint.num_velocities() != 1) continue;
+          const std::string& jn = joint.name();
+          if (jn == std::string("fer_finger_joint1") || jn == std::string("fer_finger_joint2")) continue;
+          vstart_name.emplace_back(joint.velocity_start(), jn);
+        }
+        std::sort(vstart_name.begin(), vstart_name.end(), [](const auto& a, const auto& b){return a.first < b.first;});
+        for (int i = 0; i < arm_joints_ && i < static_cast<int>(vstart_name.size()); ++i) {
+          arm_velocity_indices_.push_back(vstart_name[i].first);
+        }
+      }
     }
     int state_in() const { return state_in_; }
    private:
@@ -285,16 +316,18 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       Eigen::VectorXd dq = x.tail(total_joints_);
       plant_->SetPositions(plant_context_.get(), robot_, q.head(total_joints_));
       plant_->SetVelocities(plant_context_.get(), robot_, dq.head(total_joints_));
+      // Gravity is provided by external g_comp; controller outputs pure control torques.
+      Eigen::VectorXd tau_g_arm = Eigen::VectorXd::Zero(arm_joints_);
 
-      static const std::array<double, 7> torque_limits{60.0,60.0,60.0,60.0,35.0,35.0,30.0};
-      static const double max_tau_rate = 500.0; // Nm/s
+      static const std::array<double, 7> torque_limits{87.0,87.0,87.0,87.0,50.0,50.0,40.0};
+      static const double max_tau_rate = 20000.0; // Nm/s (more relaxed to track fast trajectories)
       static Eigen::VectorXd last_tau = Eigen::VectorXd::Zero(7);
 
       const bool commands_active = (std::chrono::duration<double>(std::chrono::steady_clock::now() - st.last_command_time).count() < 0.1);
 
       // TORQUE CONTROL: pass-through minus gravity (matches app high limits, no rate limit)
       if (st.has_torque_command) {
-        // External torque control: pass user torques; gravity compensation is added outside via g_comp.
+        // External torque control: pass user torques only; gravity is added by g_comp path.
         static const std::array<double, 7> high_limits{87.0,87.0,87.0,87.0,50.0,50.0,40.0};
         for (int i = 0; i < arm_joints_; ++i) {
           double t = st.tau_cmd[i];
@@ -314,8 +347,8 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // VELOCITY CONTROL (slightly lower gains to reduce chatter with client PI)
       else if (st.has_velocity_command && commands_active) {
-        const double Kp[7] = {30,30,30,30,20,16,14};
-        const double Ki[7] = {3,3,3,3,2.0,1.6,1.4};
+        const double Kp[7] = {40,40,40,40,26,22,18};
+        const double Ki[7] = {4,4,4,4,2.6,2.2,1.8};
         for (int i = 0; i < arm_joints_; ++i) {
           double e = st.dq_cmd[i] - dq[i];
           velocity_integral_errors_[i] = std::clamp(velocity_integral_errors_[i] + e * 0.001, -0.5, 0.5);
@@ -344,7 +377,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
           F.tail<3>() = Kr * o_err - Dr * v_ee.tail<3>();
         } else {
           Eigen::VectorXd v_ee = J * dq.head(arm_joints_);
-          const double Kpt = 50.0, Kpr = 15.0;
+          const double Kpt = 80.0, Kpr = 20.0;
           Eigen::VectorXd v_ref(6);
           for (int i = 0; i < 6; ++i) v_ref[i] = st.O_dP_EE_cmd[i];
           Eigen::VectorXd v_err = v_ref - v_ee;
@@ -355,19 +388,28 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // POSITION CONTROL (only when we have active position commands)
       else if (st.has_position_command && commands_active) {
-        // Gains tuned to be firm but stable; reduce compared to previous to avoid overshoot.
-        const double K[7] = {40,40,40,40,28,22,18};
-        const double D[7] = {14,14,14,14,10,9,8};
+        // Higher joint-space gains + small integral to eliminate steady-state error.
+        const double K[7]  = {60,60,60,60,40,30,24};
+        const double D[7]  = {20,20,20,20,14,11,9};
+        const double Ki[7] = {6,6,6,6,4,3,2};
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
         for (int i = 0; i < arm_joints_; ++i) {
           double qd = plant_to_franka_sign[i] * st.q_cmd[i];
           double e = qd - q[i];
+          // Clamp very large step errors to avoid impulsive torques on big setpoint jumps.
+          const double max_pos_err = 0.5;  // rad
+          if (e > max_pos_err) e = max_pos_err; else if (e < -max_pos_err) e = -max_pos_err;
           double v = dq[i];
           const double max_velocity = 1.0; // rad/s safety clamp
           if (std::abs(v) > max_velocity) v = (v > 0) ? max_velocity : -max_velocity;
-          tau[i] = K[i] * e - D[i] * v;
+          // Integrate error with 1 kHz timestep, clamp to prevent windup.
+          double integ = integral_errors_[i] + e * 0.001;
+          if (integ > 0.5) integ = 0.5; else if (integ < -0.5) integ = -0.5;
+          integral_errors_[i] = integ;
+          tau[i] = K[i] * e - D[i] * v + Ki[i] * integral_errors_[i];
         }
       } else {
+        // Idle: zero from controller; g_comp holds posture.
         tau.setZero();
         integral_errors_.setZero();
         velocity_integral_errors_.setZero();
@@ -428,6 +470,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
     mutable std::unique_ptr<drake::systems::Context<double>> plant_context_;
     mutable Eigen::VectorXd integral_errors_;
     mutable Eigen::VectorXd velocity_integral_errors_;
+    std::vector<int> arm_velocity_indices_;
   };
 
   num_arm_joints_cached = num_arm_joints;
@@ -440,29 +483,63 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
   // Connect only the robot model instance state (positions+velocities) to the controller.
   builder->Connect(plant->get_state_output_port(robot), ctrl->get_input_port(state_input_port_index));
 
-  // Add torque adder and connect to plant. Select gravity torques for robot instance only.
+  // Add torque adder and connect to plant. Feed gravity torques mapped to the robot's actuation order.
   // Size: actuation inputs for the robot instance (arm + fingers if actuated).
   torque_adder = builder->AddSystem<drake::systems::Adder<double>>(2, nu_robot);
 
-  const int nv_robot = plant->num_velocities(robot);
-  const int nv_full = plant->num_velocities();
+  // Map full-plant generalized forces to the robot instance's actuation input ordering.
+  class GravityToActuationSelector final : public drake::systems::LeafSystem<double> {
+   public:
+    GravityToActuationSelector(const drake::multibody::MultibodyPlant<double>* plant,
+                               drake::multibody::ModelInstanceIndex robot,
+                               int nu_robot)
+        : plant_(plant), robot_(robot), nu_robot_(nu_robot) {
+      // Input: full generalized forces (size = plant->num_velocities())
+      in_ = this->DeclareVectorInputPort("tau_g_full", drake::systems::BasicVector<double>(plant_->num_velocities())).get_index();
+      // Output: actuation-ordered forces for this robot instance (size = nu_robot)
+      this->DeclareVectorOutputPort("tau_g_inst", drake::systems::BasicVector<double>(nu_robot_),
+                                    &GravityToActuationSelector::Calc);
+      BuildMapping();
+    }
+   private:
+    void BuildMapping() {
+      // Collect all joint actuators belonging to this instance with their global actuator order
+      // and the velocity index of the underlying joint.
+      struct MapEntry { int actuator_order; int vstart; };
+      std::vector<MapEntry> entries;
+      entries.reserve(nu_robot_);
+      for (drake::multibody::JointActuatorIndex a(0); a < plant_->num_actuators(); ++a) {
+        const auto& act = plant_->get_joint_actuator(a);
+        if (act.model_instance() != robot_) continue;
+        const auto& joint = act.joint();
+        if (joint.num_velocities() != 1) continue;
+        entries.push_back({static_cast<int>(a), joint.velocity_start()});
+      }
+      std::sort(entries.begin(), entries.end(), [](const MapEntry& x, const MapEntry& y){ return x.actuator_order < y.actuator_order; });
+      mapping_.clear();
+      for (const auto& e : entries) mapping_.push_back(e.vstart);
+      // If fewer than nu_robot actuators were discovered (shouldn't happen), pad with -1
+      while (static_cast<int>(mapping_.size()) < nu_robot_) mapping_.push_back(-1);
+    }
+    void Calc(const drake::systems::Context<double>& ctx, drake::systems::BasicVector<double>* out) const {
+      const auto& tau_full = this->get_input_port(in_).Eval(ctx);
+      Eigen::VectorXd tau = Eigen::VectorXd::Zero(nu_robot_);
+      for (int i = 0; i < nu_robot_ && i < static_cast<int>(mapping_.size()); ++i) {
+        int idx = mapping_[i];
+        if (idx >= 0 && idx < tau_full.size()) tau[i] = tau_full[idx];
+      }
+      out->SetFromVector(tau);
+    }
+    const drake::multibody::MultibodyPlant<double>* plant_;
+    const drake::multibody::ModelInstanceIndex robot_;
+    int nu_robot_;
+    int in_;
+    std::vector<int> mapping_;
+  };
 
-  // First demux: full generalized forces -> [robot, rest]
-  auto* demux_full = builder->AddSystem<drake::systems::Demultiplexer<double>>(std::vector<int>{nv_robot, nv_full - nv_robot});
-  builder->Connect(g_comp->get_output_port(), demux_full->get_input_port());
-
-  if (nu_robot == nv_robot) {
-    // Gravity generalized forces for this instance match actuation size; wire directly.
-    builder->Connect(demux_full->get_output_port(0), torque_adder->get_input_port(0));
-  } else {
-    // Instance has more DOFs than actuators (or vice versa). Select the first nu_robot components
-    // of the instance gravity vector to match the actuation input size. This covers typical cases
-    // where unactuated joints are present.
-    DRAKE_DEMAND(nu_robot <= nv_robot);
-    auto* demux_match = builder->AddSystem<drake::systems::Demultiplexer<double>>(std::vector<int>{nu_robot, nv_robot - nu_robot});
-    builder->Connect(demux_full->get_output_port(0), demux_match->get_input_port());
-    builder->Connect(demux_match->get_output_port(0), torque_adder->get_input_port(0));
-  }
+  auto* selector = builder->AddSystem<GravityToActuationSelector>(plant, robot, nu_robot);
+  builder->Connect(g_comp->get_output_port(), selector->get_input_port(0));
+  builder->Connect(selector->get_output_port(), torque_adder->get_input_port(0));
 
   builder->Connect(ctrl->get_output_port(), torque_adder->get_input_port(1));
 
@@ -593,9 +670,9 @@ void FciSimEmbedder::Impl::HandleRobotCommand(const protocol::RobotCommand& cmd)
   st.has_velocity_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kJointVelocity);
   st.has_cartesian_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kCartesianPosition);
   st.has_cartesian_velocity_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kCartesianVelocity);
-  // Clear motion flags when the client indicates motion generation finished.
+  // When motion_generation_finished, keep holding last joint position to mimic real robot behavior.
   if (cmd.motion.motion_generation_finished) {
-    st.has_position_command = false;
+    st.has_position_command = true;  // keep holding the last q_cmd
     st.has_velocity_command = false;
     st.has_cartesian_command = false;
     st.has_cartesian_velocity_command = false;

@@ -234,11 +234,7 @@
         <mesh filename="../meshes/robot_ee/franka_hand_white/visual/hand.dae"/>
       </geometry>
     </visual>
-    <collision name="fer_hand_collision">
-      <geometry>
-        <mesh filename="../meshes/robot_ee/franka_hand_white/collision/hand.obj"/>
-      </geometry>
-    </collision> 
+    <!-- Remove bulky palm collision mesh; rely on finger collisions only for grasping -->
     <inertial>
       <origin rpy="0 0 0" xyz="-0.01 0 0.03"/>
       <mass value="0.73"/>
@@ -258,32 +254,17 @@
         <mesh filename="../meshes/robot_ee/franka_hand_white/visual/finger.dae"/>
       </geometry>
     </visual>
-    <!-- screw mount -->
+    <!-- Simplified, tighter finger collision (body + tip) in meters -->
     <collision>
-      <origin rpy="0 0 0" xyz="0 18.5e-3 11e-3"/>
+      <origin rpy="0 0 0" xyz="0 9e-3 22e-3"/>
       <geometry>
-        <box size="22e-3 15e-3 20e-3"/>
+        <box size="16e-3 7e-3 44e-3"/>
       </geometry>
     </collision>
-    <!-- cartriage sledge -->
     <collision>
-      <origin rpy="0 0 0" xyz="0 6.8e-3 2.2e-3"/>
+      <origin rpy="0 0 0" xyz="0 10.8e-3 45.5e-3"/>
       <geometry>
-        <box size="22e-3 8.8e-3 3.8e-3"/>
-      </geometry>
-    </collision>
-    <!-- diagonal finger -->
-    <collision>
-      <origin rpy="0.5235987755982988 0 0" xyz="0 15.9e-3 28.35e-3"/>
-      <geometry>
-        <box size="17.5e-3 7e-3 23.5e-3"/>
-      </geometry>
-    </collision>
-    <!-- rubber tip with which to grasp -->
-    <collision>
-      <origin rpy="0 0 0" xyz="0 7.58e-3 45.25e-3"/>
-      <geometry>
-        <box size="17.5e-3 15.2e-3 18.5e-3"/>
+        <box size="16e-3 12e-3 10e-3"/>
       </geometry>
     </collision>
     <inertial>
@@ -298,32 +279,17 @@
         <mesh filename="../meshes/robot_ee/franka_hand_white/visual/finger.dae"/>
       </geometry>
     </visual>
-    <!-- screw mount -->
+    <!-- Simplified, tighter finger collision (body + tip), mirrored on -Y -->
     <collision>
-      <origin rpy="0 0 0" xyz="0 -18.5e-3 11e-3"/>
+      <origin rpy="0 0 0" xyz="0 -9e-3 22e-3"/>
       <geometry>
-        <box size="22e-3 15e-3 20e-3"/>
+        <box size="16e-3 7e-3 44e-3"/>
       </geometry>
     </collision>
-    <!-- cartriage sledge -->
     <collision>
-      <origin rpy="0 0 0" xyz="0 -6.8e-3 2.2e-3"/>
+      <origin rpy="0 0 0" xyz="0 -10.8e-3 45.5e-3"/>
       <geometry>
-        <box size="22e-3 8.8e-3 3.8e-3"/>
-      </geometry>
-    </collision>
-    <!-- diagonal finger -->
-    <collision>
-      <origin rpy="-0.5235987755982988 0 0" xyz="0 -15.9e-3 28.35e-3"/>
-      <geometry>
-        <box size="17.5e-3 7e-3 23.5e-3"/>
-      </geometry>
-    </collision>
-    <!-- rubber tip with which to grasp -->
-    <collision>
-      <origin rpy="0 0 0" xyz="0 -7.58e-3 45.25e-3"/>
-      <geometry>
-        <box size="17.5e-3 15.2e-3 18.5e-3"/>
+        <box size="16e-3 12e-3 10e-3"/>
       </geometry>
     </collision>
     <inertial>

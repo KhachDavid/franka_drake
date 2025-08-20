@@ -55,7 +55,7 @@
 
     <!-- Boxes to pick - smaller and closer to robot -->
     <model name="box_red">
-      <pose>0.5 -0.15 0.05 0 0 0</pose>
+      <pose>0.39 -0.175 0.08 0 0 0</pose>
       <link name="box_link">
         <inertial>
           <mass>0.2</mass>
