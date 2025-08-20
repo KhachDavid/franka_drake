@@ -138,6 +138,8 @@ struct FciSimEmbedder::Impl {
   // Cached indices for gripper joints within the robot instance position vector
   int gripper_left_q_index = -1;
   int gripper_right_q_index = -1;
+  int gripper_left_act_index = -1;
+  int gripper_right_act_index = -1;
 
   // Networking server
   std::unique_ptr<FrankaFciSimServer> server;
@@ -195,6 +197,31 @@ std::pair<int, int> FciSimEmbedder::Impl::DetectEndEffectorConfiguration() {
       gripper_left_q_index = 7;
       gripper_right_q_index = 8;
     }
+    // Compute within-instance actuation indices by sorting instance joints by velocity_start
+    try {
+      const int nv_inst = plant->num_velocities(robot);
+      std::vector<std::pair<int,int>> vstart_to_local; vstart_to_local.reserve(nv_inst);
+      // Collect all single-DOF joints belonging to the instance
+      for (drake::multibody::JointIndex j(0); j < plant->num_joints(); ++j) {
+        const auto& joint = plant->get_joint(j);
+        if (joint.model_instance() != robot) continue;
+        // Only 1-DoF joints contribute one velocity index
+        if (joint.num_velocities() == 1) {
+          vstart_to_local.emplace_back(joint.velocity_start(), 0);
+        }
+      }
+      std::sort(vstart_to_local.begin(), vstart_to_local.end(), [](auto&a, auto&b){return a.first < b.first;});
+      for (int i = 0; i < static_cast<int>(vstart_to_local.size()); ++i) vstart_to_local[i].second = i;
+      auto local_index_for_vstart = [&](int vstart)->int{
+        for (auto& p : vstart_to_local) if (p.first == vstart) return p.second; return -1; };
+      const auto& jl = plant->GetJointByName("fer_finger_joint1", robot);
+      const auto& jr = plant->GetJointByName("fer_finger_joint2", robot);
+      gripper_left_act_index = local_index_for_vstart(jl.velocity_start());
+      gripper_right_act_index = local_index_for_vstart(jr.velocity_start());
+    } catch (const std::exception&) {
+      gripper_left_act_index = num_arm_joints;
+      gripper_right_act_index = num_arm_joints + 1;
+    }
     // EE parameters for gripper variants
     if (state.ee_frame_name == "fer_hand_tcp") {
       state.ee_mass = 0.73;
@@ -235,9 +262,11 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
     explicit ImpedanceWrapper(const drake::multibody::MultibodyPlant<double>* plant,
                               drake::multibody::ModelInstanceIndex robot,
                               int arm_joints, int total_joints, int nu_robot,
-                              int gripper_left_q_index, int gripper_right_q_index)
+                              int gripper_left_q_index, int gripper_right_q_index,
+                              int gripper_left_act_index, int gripper_right_act_index)
         : plant_(plant), robot_(robot), arm_joints_(arm_joints), total_joints_(total_joints), nu_robot_(nu_robot),
-          gripper_left_q_index_(gripper_left_q_index), gripper_right_q_index_(gripper_right_q_index) {
+          gripper_left_q_index_(gripper_left_q_index), gripper_right_q_index_(gripper_right_q_index),
+          gripper_left_act_index_(gripper_left_act_index), gripper_right_act_index_(gripper_right_act_index) {
       state_in_ = this->DeclareVectorInputPort("robot_state", drake::systems::BasicVector<double>(2 * total_joints_)).get_index();
       this->DeclareVectorOutputPort("control_torques", drake::systems::BasicVector<double>(nu_robot_),
                                     &ImpedanceWrapper::CalcTorques);
@@ -353,13 +382,14 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       for (int i = 0; i < std::min(arm_joints_, nu_robot_); ++i) tau_out[i] = tau[i];
 
       if (nu_robot_ > arm_joints_ && st.gripper_registered && st.num_gripper_joints == 2 && gripper_left_q_index_ >= 0 && gripper_right_q_index_ >= 0) {
-        // Simple P-D control for prismatic fingers to track desired width
+        // Simple P-D control for prismatic fingers to track desired width.
+        // For prismatic with non-negative limits, both joints target +w/2; axis orientation handles direction.
         double w = std::clamp(st.gripper_target_width, st.gripper_min_width, st.gripper_max_width);
-        double qL_des = st.gripper_left_sign  * (w * 0.5);
-        double qR_des = st.gripper_right_sign * (w * 0.5);
-        const int iL = gripper_left_q_index_;
-        const int iR = gripper_right_q_index_;
-        if (total_joints_ > iR && iL < nu_robot_ && iR < nu_robot_) {
+        double qL_des = (w * 0.5);
+        double qR_des = (w * 0.5);
+        const int iL = gripper_left_act_index_;
+        const int iR = gripper_right_act_index_;
+        if (iL >= 0 && iR >= 0 && iL < nu_robot_ && iR < nu_robot_) {
           double eL = q[iL] - qL_des;
           double eR = q[iR] - qR_des;
           double vL = dq[iL];
@@ -378,6 +408,8 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
     int nu_robot_;
     int gripper_left_q_index_;
     int gripper_right_q_index_;
+    int gripper_left_act_index_;
+    int gripper_right_act_index_;
     int state_in_;
     mutable std::unique_ptr<drake::systems::Context<double>> plant_context_;
     mutable Eigen::VectorXd integral_errors_;
@@ -388,7 +420,8 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
   num_total_joints_cached = num_total_joints;
   const int nu_robot = plant->get_actuation_input_port(robot).size();
   auto* ctrl = builder->AddSystem<ImpedanceWrapper>(plant, robot, num_arm_joints, num_total_joints, nu_robot,
-                                                    gripper_left_q_index, gripper_right_q_index);
+                                                    gripper_left_q_index, gripper_right_q_index,
+                                                    gripper_left_act_index, gripper_right_act_index);
   state_input_port_index = ctrl->state_in();
   // Connect only the robot model instance state (positions+velocities) to the controller.
   builder->Connect(plant->get_state_output_port(robot), ctrl->get_input_port(state_input_port_index));
