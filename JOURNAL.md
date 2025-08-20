@@ -1,5 +1,10 @@
 # Simulating Franka FER3 Control Box in Drake
 
+## Week of August 18
+
+[Screencast from 2025-08-20 04-15-50.webm](https://github.com/user-attachments/assets/6ce2828c-aeb2-4729-b41b-9f56322a9eb4)
+
+
 ## Week of August 11
 
 <img width="599" height="499" alt="image" src="https://github.com/user-attachments/assets/924f3749-8dcf-46e7-b68a-4a07ae1cca25" />
