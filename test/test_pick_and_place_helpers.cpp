@@ -18,7 +18,7 @@ using franka_fci_sim::manipulation::WaitForGripper;
 
 namespace {
 
-TEST(WarehouseHelpers, IKFindsSolutionForNearbyPose) {
+TEST(PickAndPlaceHelpers, IKFindsSolutionForNearbyPose) {
   const double dt = 0.001;
   drake::systems::DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, dt);
@@ -47,7 +47,7 @@ TEST(WarehouseHelpers, IKFindsSolutionForNearbyPose) {
   ASSERT_TRUE(maybe.has_value());
 }
 
-TEST(WarehouseHelpers, FindObjectByNameReturnsNulloptWhenMissing) {
+TEST(PickAndPlaceHelpers, FindObjectByNameReturnsNulloptWhenMissing) {
   const double dt = 0.001;
   drake::systems::DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, dt);
@@ -72,7 +72,7 @@ TEST(WarehouseHelpers, FindObjectByNameReturnsNulloptWhenMissing) {
   ASSERT_FALSE(idx.has_value());
 }
 
-TEST(WarehouseHelpers, AttachAndDetachObjectDoNotThrow) {
+TEST(PickAndPlaceHelpers, AttachAndDetachObjectDoNotThrow) {
   const double dt = 0.001;
   drake::systems::DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, dt);
@@ -108,7 +108,7 @@ TEST(WarehouseHelpers, AttachAndDetachObjectDoNotThrow) {
   });
 }
 
-TEST(WarehouseHelpers, WaitAndTrajectoryRun) {
+TEST(PickAndPlaceHelpers, WaitAndTrajectoryRun) {
   const double dt = 0.001;
   drake::systems::DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, dt);

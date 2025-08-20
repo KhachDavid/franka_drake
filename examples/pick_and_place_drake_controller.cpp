@@ -1,4 +1,4 @@
-// Drake-based warehouse pick-and-place with collision awareness
+// Drake-based pick-and-place with collision awareness
 // This integrates directly with the Drake simulation and physics,
 // using proper IK, collision detection, and object manipulation.
 
@@ -34,15 +34,15 @@ int main() {
   drake::systems::DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, dt);
 
-  // Load warehouse scene
+  // Load pick and place scene
   {
     drake::multibody::Parser parser(&plant, &scene_graph);
-    const std::string sdf_path = franka_fci_sim::ResolveModelPath("models/warehouse_scene.sdf");
+    const std::string sdf_path = franka_fci_sim::ResolveModelPath("models/pick_and_place_scene.sdf");
     try {
       parser.AddModels(sdf_path);
-      std::cout << "Loaded warehouse scene from: " << sdf_path << std::endl;
+      std::cout << "Loaded pick and place scene from: " << sdf_path << std::endl;
     } catch (const std::exception& e) {
-      std::cerr << "Failed to load warehouse SDF: " << sdf_path << "\n" << e.what() << std::endl;
+      std::cerr << "Failed to load pick and place scene SDF: " << sdf_path << "\n" << e.what() << std::endl;
       return -1;
     }
   }
@@ -88,36 +88,17 @@ int main() {
 
   simulator.Initialize();
 
-  std::cout << "\nDrake-based Warehouse Pick-and-Place Controller" << std::endl;
-  std::cout << "================================================" << std::endl;
-  std::cout << "Meshcat visualization: http://localhost:7000" << std::endl;
-  std::cout << "This demo uses Drake's IK and collision detection." << std::endl;
-  
-  // Test gripper immediately to ensure it's working
-  std::cout << "\nTesting gripper control..." << std::endl;
   embed->SetGripperWidth(0.08);  // Open
   WaitForGripper(simulator, 1.0);
-  std::cout << "  Open position: " << embed->GetGripperWidth()*1000 << "mm" << std::endl;
   
   embed->SetGripperWidth(0.02);  // Close
   WaitForGripper(simulator, 1.0);
-  std::cout << "  Closed position: " << embed->GetGripperWidth()*1000 << "mm" << std::endl;
-  
-  embed->SetGripperWidth(0.08);  // Re-open for start
-  WaitForGripper(simulator, 1.0);
-  std::cout << "  Gripper control verified!" << std::endl;
 
   // Find the robot and objects
   const auto& robot_instance = plant.GetBodyByName("fer_link1").model_instance();
   
   // Find the red cube (try different possible names)
-  auto red_cube_body = FindObjectByName(plant, "box_red");
-  if (!red_cube_body) {
-    red_cube_body = FindObjectByName(plant, "box_link");
-  }
-  if (!red_cube_body) {
-    red_cube_body = FindObjectByName(plant, "red");
-  }
+  auto red_cube_body = FindObjectByName(plant, "box_link");
   if (!red_cube_body) {
     std::cerr << "Could not find red cube in scene!" << std::endl;
     return -1;

@@ -8,12 +8,12 @@ install(TARGETS franka_fci_sim_embed_example
     RUNTIME DESTINATION bin
 )
 
-# Drake-based warehouse controller
-add_executable(warehouse_drake_controller warehouse_drake_controller.cpp)
-target_link_libraries(warehouse_drake_controller franka_drake_core)
-set_target_properties(warehouse_drake_controller PROPERTIES
-    OUTPUT_NAME "warehouse-drake-controller"
+# Drake-based pick and place controller
+add_executable(pick_and_place_drake_controller pick_and_place_drake_controller.cpp)
+target_link_libraries(pick_and_place_drake_controller franka_drake_core)
+set_target_properties(pick_and_place_drake_controller PROPERTIES
+    OUTPUT_NAME "pick-and-place-drake-controller"
 )
-install(TARGETS warehouse_drake_controller
+install(TARGETS pick_and_place_drake_controller
     RUNTIME DESTINATION bin
 )

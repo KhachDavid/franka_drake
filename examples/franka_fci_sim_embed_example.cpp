@@ -1,4 +1,4 @@
-// Warehouse scene example: load a static warehouse SDF into SceneGraph,
+// Pick and place scene example: load a static pick and place scene SDF into SceneGraph,
 // embed a Franka robot using FciSimEmbedder, add Meshcat viz, and run.
 
 #include <drake/multibody/plant/multibody_plant.h>
@@ -21,15 +21,15 @@ int main() {
   drake::systems::DiagramBuilder<double> builder;
   auto [plant, scene_graph] = AddMultibodyPlantSceneGraph(&builder, dt);
 
-  // Load warehouse scene (as a model to SceneGraph through the plant's parser).
+  // Load pick and place scene (as a model to SceneGraph through the plant's parser).
   // We parse it using the Multibody Parser so visual geometries register in SceneGraph.
   {
     drake::multibody::Parser parser(&plant, &scene_graph);
-    const std::string sdf_path = franka_fci_sim::ResolveModelPath("models/warehouse_scene.sdf");
+    const std::string sdf_path = franka_fci_sim::ResolveModelPath("models/pick_and_place_scene.sdf");
     try {
       parser.AddModels(sdf_path);
     } catch (const std::exception& e) {
-      std::cerr << "Failed to load warehouse SDF: " << sdf_path << "\n" << e.what() << std::endl;
+      std::cerr << "Failed to load pick and place scene SDF: " << sdf_path << "\n" << e.what() << std::endl;
     }
   }
 
@@ -71,7 +71,7 @@ int main() {
   simulator.Initialize();
   embed->StartServer(1337, 1338);
 
-  std::cout << "Warehouse example running. Meshcat: http://localhost:7000\n";
+  std::cout << "Pick and place scene example running. Meshcat: http://localhost:7000\n";
   std::cout << "Franka FCI server at 127.0.0.1:1337/1338\n";
 
   for (;;) {
