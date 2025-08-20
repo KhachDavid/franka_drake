@@ -44,6 +44,16 @@ jobs:
           sudo mkdir -p /opt/drake
           sudo tar -xzf drake.tar.gz -C /opt/drake --strip-components=1
 
+      - name: Build and install libfranka
+        run: |
+          git clone --depth 1 --branch 0.13.3 https://github.com/frankaemika/libfranka.git /tmp/libfranka
+          cmake -S /tmp/libfranka -B /tmp/libfranka/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/opt/libfranka \
+            -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF -DBUILD_DOCUMENTATION=OFF
+          cmake --build /tmp/libfranka/build -j"$(nproc)"
+          sudo cmake --install /tmp/libfranka/build
+
       - name: Locate franka_drake directory
         run: |
           if [ -f CMakeLists.txt ] && grep -qi "^project(\s*franka_drake" CMakeLists.txt; then
@@ -61,21 +71,21 @@ jobs:
 
       - name: Configure
         env:
-          LD_LIBRARY_PATH: /opt/drake/lib
+          LD_LIBRARY_PATH: /opt/drake/lib:/opt/libfranka/lib
         run: |
           cmake -S "$FDIR" -B "$FDIR/build" \
-            -DCMAKE_PREFIX_PATH=/opt/drake \
+            -DCMAKE_PREFIX_PATH="/opt/drake;/opt/libfranka" \
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         env:
-          LD_LIBRARY_PATH: /opt/drake/lib
+          LD_LIBRARY_PATH: /opt/drake/lib:/opt/libfranka/lib
         run: |
           cmake --build "$FDIR/build" -j"$(nproc)"
 
       - name: Test
         env:
-          LD_LIBRARY_PATH: /opt/drake/lib
+          LD_LIBRARY_PATH: /opt/drake/lib:/opt/libfranka/lib
         run: |
           ctest --test-dir "$FDIR/build" --output-on-failure -j"$(nproc)"
 
