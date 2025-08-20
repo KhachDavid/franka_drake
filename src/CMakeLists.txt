@@ -6,6 +6,7 @@ add_library(franka_drake_core STATIC
     gripper_sim_server.cpp
     embed_fci_sim.cpp
     embed_fci_sim_helpers.cpp
+    manipulation_helpers.cpp
 )
 
 # Set library properties

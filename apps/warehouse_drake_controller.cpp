@@ -21,200 +21,13 @@
 
 using drake::multibody::AddMultibodyPlantSceneGraph;
 
-namespace {
-
-struct PickPlaceTarget {
-  std::string object_name;
-  drake::math::RigidTransformd pickup_pose;
-  drake::math::RigidTransformd place_pose;
-};
-
-// Solve IK to reach a target end-effector pose with collision avoidance
-std::optional<Eigen::VectorXd> SolveCollisionFreeIK(
-    drake::multibody::MultibodyPlant<double>& plant,
-    drake::systems::Context<double>& context,
-    const drake::multibody::ModelInstanceIndex& robot,
-    const drake::math::RigidTransformd& X_W_EE_target,
-    const Eigen::VectorXd& q_current,
-    bool relax_constraints = false) {
-  
-  using drake::multibody::InverseKinematics;
-  
-  try {
-    InverseKinematics ik(plant);
-    const auto& world = plant.world_frame();
-    const auto& ee = plant.GetFrameByName("fer_hand_tcp", robot);
-    
-    // Position constraint (looser tolerance when carrying payload)
-    double pos_tol = relax_constraints ? 0.02 : 0.005;
-    ik.AddPositionConstraint(
-        ee, Eigen::Vector3d::Zero(), world,
-        X_W_EE_target.translation() - Eigen::Vector3d(pos_tol, pos_tol, pos_tol),
-        X_W_EE_target.translation() + Eigen::Vector3d(pos_tol, pos_tol, pos_tol));
-    
-    // Orientation constraint (looser when carrying payload)
-    const drake::math::RotationMatrixd R = X_W_EE_target.rotation();
-    double rot_tol = relax_constraints ? 30.0 * M_PI / 180.0 : 10.0 * M_PI / 180.0;
-    ik.AddOrientationConstraint(ee, drake::math::RotationMatrixd(), world, R, rot_tol);
-    
-    // Joint limits (stay within reasonable bounds)
-    auto prog = ik.get_mutable_prog();
-    const auto& q_vars = ik.q();
-    
-    // Stay close to current configuration (less strict when relaxed)
-    Eigen::VectorXd q_nominal = q_current;
-    double regularization_weight = relax_constraints ? 0.1 : 1.0;
-    prog->AddQuadraticCost(regularization_weight * (q_vars - q_nominal).transpose() * (q_vars - q_nominal));
-    
-    // Initial guess
-    prog->SetInitialGuess(q_vars, q_current);
-    
-    const auto result = drake::solvers::Solve(*prog);
-    if (result.is_success()) {
-      return result.GetSolution(q_vars);
-    } else {
-      std::cout << "IK failed: " << result.get_solution_result() << std::endl;
-    }
-  } catch (const std::exception& e) {
-    std::cerr << "IK exception: " << e.what() << std::endl;
-  }
-  return std::nullopt;
-}
-
-// Find a specific object by name in the plant
-std::optional<drake::multibody::BodyIndex> FindObjectByName(
-    const drake::multibody::MultibodyPlant<double>& plant,
-    const std::string& object_name) {
-  
-  for (drake::multibody::BodyIndex b(0); b < plant.num_bodies(); ++b) {
-    const auto& body = plant.get_body(b);
-    if (body.name().find(object_name) != std::string::npos) {
-      return b;
-    }
-  }
-  return std::nullopt;
-}
-
-// Wait for gripper to reach target width by advancing simulation
-void WaitForGripper(drake::systems::Simulator<double>& simulator,
-                   double wait_time = 1.5) {
-  const double start_time = simulator.get_context().get_time();
-  while (simulator.get_context().get_time() < start_time + wait_time) {
-    simulator.AdvanceTo(simulator.get_context().get_time() + 0.001);
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
-  }
-}
-
-// Execute a smooth trajectory between joint configurations with payload handling
-void ExecuteJointTrajectory(
-    drake::multibody::MultibodyPlant<double>& plant,
-    drake::systems::Context<double>& plant_ctx,
-    drake::systems::Simulator<double>& simulator,
-    const drake::multibody::ModelInstanceIndex& robot,
-    const Eigen::VectorXd& q_start,
-    const Eigen::VectorXd& q_end,
-    double duration,
-    const std::string& description,
-    bool has_payload = false,
-    const drake::multibody::BodyIndex* attached_body = nullptr,
-    const drake::math::RigidTransformd* attachment_transform = nullptr) {
-  
-  std::cout << "Robot: " << description << " (duration: " << duration << "s)";
-  if (has_payload) std::cout << " [WITH PAYLOAD]";
-  std::cout << std::endl;
-  
-  const double dt = 0.001;  // 1ms timestep
-  const double t_start = simulator.get_context().get_time();
-  
-  // Slower motion when carrying payload
-  const double effective_duration = has_payload ? duration * 1.5 : duration;
-  
-  while (simulator.get_context().get_time() < t_start + effective_duration) {
-    const double t_rel = simulator.get_context().get_time() - t_start;
-    const double alpha = std::clamp(t_rel / effective_duration, 0.0, 1.0);
-    
-    // Smooth interpolation (cosine blend)
-    const double s = 0.5 * (1.0 - std::cos(M_PI * alpha));
-    const Eigen::VectorXd q_interp = (1.0 - s) * q_start + s * q_end;
-    
-    // Set positions with lower velocities when carrying payload
-    plant.SetPositions(&plant_ctx, robot, q_interp);
-    
-    // Use smaller velocity commands when carrying payload to prevent instability
-    const double vel_scale = has_payload ? 0.3 : 0.0;
-    plant.SetVelocities(&plant_ctx, robot, 
-                       vel_scale * (q_end - q_start) / effective_duration);
-    
-    // Update attached object position - keep it visible between gripper fingers
-    if (has_payload && attached_body && attachment_transform) {
-      const auto& ee_frame = plant.GetFrameByName("fer_hand_tcp", robot);
-      const auto& world_frame = plant.world_frame();
-      const auto X_W_EE = plant.CalcRelativeTransform(plant_ctx, world_frame, ee_frame);
-      
-      // Keep object at fixed position relative to gripper (visible between fingers)
-      const auto X_W_Obj = X_W_EE * (*attachment_transform);
-      
-      const auto& body = plant.get_body(*attached_body);
-      plant.SetFreeBodyPose(&plant_ctx, body, X_W_Obj);
-      
-      // Keep object stable (no crazy velocities)
-      plant.SetFreeBodySpatialVelocity(&plant_ctx, body, drake::multibody::SpatialVelocity<double>::Zero());
-    }
-    
-    simulator.AdvanceTo(simulator.get_context().get_time() + dt);
-    std::this_thread::sleep_for(std::chrono::microseconds(200));  // Slower update when with payload
-  }
-  
-  std::cout << "  Movement completed" << std::endl;
-}
-
-// Attach object to gripper - keep it visible between fingers
-drake::math::RigidTransformd AttachObject(
-    drake::multibody::MultibodyPlant<double>& plant,
-    drake::systems::Context<double>& plant_ctx,
-    const drake::multibody::BodyIndex& object_body,
-    const drake::multibody::ModelInstanceIndex& robot) {
-  
-  const auto& ee_frame = plant.GetFrameByName("fer_hand_tcp", robot);
-  const auto& world_frame = plant.world_frame();
-  
-  // Position cube between gripper fingers - visible and realistic
-  // When grasping at cube height, the cube should be slightly forward of TCP
-  // This keeps it visible between the fingers
-  drake::math::RigidTransformd X_EE_Obj;
-  X_EE_Obj.set_translation(Eigen::Vector3d(0, 0, 0.02));  // 2cm forward of TCP (between fingers)
-  X_EE_Obj.set_rotation(drake::math::RotationMatrixd::Identity());
-  
-  // Position object at grasp location
-  const auto X_W_EE = plant.CalcRelativeTransform(plant_ctx, world_frame, ee_frame);
-  const auto X_W_Obj = X_W_EE * X_EE_Obj;
-  
-  const auto& body = plant.get_body(object_body);
-  plant.SetFreeBodyPose(&plant_ctx, body, X_W_Obj);
-  plant.SetFreeBodySpatialVelocity(&plant_ctx, body, drake::multibody::SpatialVelocity<double>::Zero());
-  
-  std::cout << "  Grasping " << plant.get_body(object_body).name() << " between gripper fingers" << std::endl;
-  std::cout << "  Cube held 2cm forward of TCP (visible between fingers)" << std::endl;
-  
-  return X_EE_Obj;  // Return attachment transform
-}
-
-// Detach object from end-effector
-void DetachObject(
-    drake::multibody::MultibodyPlant<double>& plant,
-    drake::systems::Context<double>& plant_ctx,
-    const drake::multibody::BodyIndex& object_body,
-    const drake::math::RigidTransformd& X_W_final) {
-  
-  // Place object at final position
-  const auto& body = plant.get_body(object_body);
-  plant.SetFreeBodyPose(&plant_ctx, body, X_W_final);
-  plant.SetFreeBodySpatialVelocity(&plant_ctx, body, drake::multibody::SpatialVelocity<double>::Zero());
-  
-  std::cout << "  Placing " << body.name() << " at final position" << std::endl;
-}
-
-}  // namespace
+#include "franka_drake/manipulation_helpers.h"
+using franka_fci_sim::manipulation::AttachObject;
+using franka_fci_sim::manipulation::DetachObject;
+using franka_fci_sim::manipulation::ExecuteJointTrajectory;
+using franka_fci_sim::manipulation::FindObjectByName;
+using franka_fci_sim::manipulation::SolveCollisionFreeIK;
+using franka_fci_sim::manipulation::WaitForGripper;
 
 int main() {
   const double dt = 0.001; // 1 kHz
@@ -297,23 +110,6 @@ int main() {
   // Find the robot and objects
   const auto& robot_instance = plant.GetBodyByName("fer_link1").model_instance();
   
-  // Debug: Check if gripper joints exist and are being controlled
-  try {
-    const auto& left_joint = plant.GetJointByName("fer_finger_joint1", robot_instance);
-    const auto& right_joint = plant.GetJointByName("fer_finger_joint2", robot_instance);
-    std::cout << "Found gripper joints: " << left_joint.name() << ", " << right_joint.name() << std::endl;
-    std::cout << "  Initial gripper width: " << embed->GetGripperWidth()*1000 << "mm" << std::endl;
-  } catch (const std::exception& e) {
-    std::cout << "Gripper joints not found: " << e.what() << std::endl;
-  }
-  
-  // List all bodies to debug
-  std::cout << "\nAvailable bodies in scene:" << std::endl;
-  for (drake::multibody::BodyIndex b(0); b < plant.num_bodies(); ++b) {
-    const auto& body = plant.get_body(b);
-    std::cout << "  - " << body.name() << " (model: " << body.model_instance() << ")" << std::endl;
-  }
-  
   // Find the red cube (try different possible names)
   auto red_cube_body = FindObjectByName(plant, "box_red");
   if (!red_cube_body) {
@@ -322,13 +118,10 @@ int main() {
   if (!red_cube_body) {
     red_cube_body = FindObjectByName(plant, "red");
   }
-  
   if (!red_cube_body) {
     std::cerr << "Could not find red cube in scene!" << std::endl;
     return -1;
   }
-
-  std::cout << "\nFound red cube: " << plant.get_body(*red_cube_body).name() << std::endl;
 
   // Get current positions
   const auto& ee_frame = plant.GetFrameByName("fer_hand_tcp", robot_instance);
@@ -336,11 +129,6 @@ int main() {
   
   // Define pick-and-place targets (updated for new box positions)
   const auto red_cube_pose = plant.EvalBodyPoseInWorld(plant_ctx, plant.get_body(*red_cube_body));
-  std::cout << "Red cube position: " << red_cube_pose.translation().transpose() << std::endl;
-  std::cout << "  - Cube center at z=" << red_cube_pose.translation().z() << "m" << std::endl;
-  std::cout << "  - Cube bottom at z=" << (red_cube_pose.translation().z() - 0.02) << "m" << std::endl;
-  std::cout << "  - Cube top at z=" << (red_cube_pose.translation().z() + 0.02) << "m" << std::endl;
-
   // Define waypoints with better planning and return home
   struct Waypoint {
     drake::math::RigidTransformd pose;
@@ -410,15 +198,6 @@ int main() {
   drake::math::RigidTransformd X_W_retreat = X_W_place;
   X_W_retreat.set_translation(X_W_place.translation() + Eigen::Vector3d(0, 0, 0.15));
   waypoints.push_back({X_W_retreat, "Retreat after placing", false, -1, false});
-
-  std::cout << "\nStarting collision-aware pick-and-place sequence..." << std::endl;
-  std::cout << "This demonstrates waypoint-based control with:" << std::endl;
-  std::cout << "  - IK-based pose control for each waypoint" << std::endl;
-  std::cout << "  - Smooth trajectory execution between waypoints" << std::endl;
-  std::cout << "  - Gripper control integrated with motion" << std::endl;
-  std::cout << "  - Payload handling during transport" << std::endl;
-  std::cout << "  - Collision-free path planning" << std::endl;
-  std::this_thread::sleep_for(std::chrono::seconds(2));
 
   bool object_attached = false;
   drake::math::RigidTransformd attachment_transform;
@@ -567,17 +346,6 @@ int main() {
   ExecuteJointTrajectory(plant, plant_ctx, simulator, robot_instance, 
                        q_current, q_home_config, 4.0, "Return to home");
   
-  std::cout << "\nPick-and-place sequence completed successfully!" << std::endl;
-  std::cout << "Red cube moved from ground to shelf" << std::endl;
-  std::cout << "Robot returned to home position" << std::endl;
-  std::cout << "\nThis example demonstrates:" << std::endl;
-  std::cout << "  1. Waypoint-based motion planning with IK" << std::endl;
-  std::cout << "  2. Integrated gripper control during motion" << std::endl;
-  std::cout << "  3. Payload handling and object attachment" << std::endl;
-  std::cout << "  4. Collision-free path planning" << std::endl;
-  std::cout << "  5. Smooth trajectory execution between waypoints" << std::endl;
-  std::cout << "\nPress Ctrl+C to exit..." << std::endl;
-
   // Keep simulation running
   while (true) {
     simulator.AdvanceTo(simulator.get_context().get_time() + dt);

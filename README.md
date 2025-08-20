@@ -51,6 +51,21 @@ Artifacts:
 - `bin/franka-fci-sim-embed-example`
 - `lib/libfranka_drake_core.a`
 
+## Knowledge base: Warehouse helpers
+
+Public helper APIs for warehouse-style manipulation demos live in `include/franka_drake/warehouse_helpers.h` and are implemented in `src/warehouse_helpers.cpp`.
+
+Functions:
+
+- SolveCollisionFreeIK: Collision-aware IK to the `fer_hand_tcp` frame.
+- FindObjectByName: Simple substring search for a body in the plant.
+- WaitForGripper: Advance sim for a fixed time to allow gripper motion.
+- ExecuteJointTrajectory: Cosine-blend joint space motion with optional payload handling.
+- AttachObject: Rigidly attach an object in front of the TCP for simulated grasps.
+- DetachObject: Place object at a final pose and zero velocities.
+
+These are used by `apps/warehouse_drake_controller.cpp` and can be reused by clients embedding `franka_drake_core`.
+
 ## Running the full server
 
 You can use the convenience script or the binary directly.
