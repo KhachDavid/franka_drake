@@ -1,5 +1,5 @@
 <?xml version="1.0" ?>
-<!-- Fixed version of fer_drake.urdf with relative mesh paths -->
+<!-- Simplified collision version of fer_drake.urdf with geometric collision shapes -->
 <robot name="fer">
   <link name="base">
       </link>
@@ -8,17 +8,18 @@
     <child link="fer_link0"/>
     <origin rpy="0 0 0" xyz="0 0 0"/>
   </joint>
-  <!-- sub-link defining detailed meshes for collision with environment -->
+  
+  <!-- Link 0: Base - simplified collision -->
   <link name="fer_link0">
     <visual name="fer_link0_visual">
       <geometry>
         <mesh filename="../meshes/robot_arms/fer/visual/link0.dae"/>
       </geometry>
     </visual>
-    
     <collision name="fer_link0_collision">
+      <origin xyz="0 0 0.1" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/robot_arms/fer/collision/link0.obj"/>
+        <cylinder radius="0.06" length="0.2"/>
       </geometry>
     </collision>
     <inertial>
@@ -27,7 +28,8 @@
       <inertia ixx="0.009" ixy="0.0" ixz="0.002" iyy="0.0115" iyz="0.0" izz="0.0085"/>
     </inertial>
   </link>
-  <!-- sub-link defining detailed meshes for collision with environment -->
+  
+  <!-- Link 1: Shoulder - simplified collision -->
   <link name="fer_link1">
     <visual name="fer_link1_visual">
       <geometry>
@@ -35,8 +37,9 @@
       </geometry>
     </visual>
     <collision name="fer_link1_collision">
+      <origin xyz="0 0 -0.03" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/robot_arms/fer/collision/link1.obj"/>
+        <cylinder radius="0.05" length="0.1"/>
       </geometry>
     </collision>
     <inertial>
@@ -54,7 +57,8 @@
     <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973"/>
     <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
   </joint>
-  <!-- sub-link defining detailed meshes for collision with environment -->
+  
+  <!-- Link 2: Upper arm - simplified collision -->
   <link name="fer_link2">
     <visual name="fer_link2_visual">
       <geometry>
@@ -62,8 +66,9 @@
       </geometry>
     </visual>
     <collision name="fer_link2_collision">
+      <origin xyz="0 -0.1 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/robot_arms/fer/collision/link2.obj"/>
+        <box size="0.08 0.2 0.08"/>
       </geometry>
     </collision>
     <inertial>
@@ -81,7 +86,8 @@
     <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-1.7628" soft_upper_limit="1.7628"/>
     <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
   </joint>
-  <!-- sub-link defining detailed meshes for collision with environment -->
+  
+  <!-- Link 3: Elbow - simplified collision -->
   <link name="fer_link3">
     <visual name="fer_link3_visual">
       <geometry>
@@ -89,8 +95,9 @@
       </geometry>
     </visual>
     <collision name="fer_link3_collision">
+      <origin xyz="0.03 0 -0.01" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/robot_arms/fer/collision/link3.obj"/>
+        <box size="0.08 0.06 0.08"/>
       </geometry>
     </collision>
     <inertial>
@@ -108,7 +115,8 @@
     <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973"/>
     <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
   </joint>
-  <!-- sub-link defining detailed meshes for collision with environment -->
+  
+  <!-- Link 4: Forearm - simplified collision -->
   <link name="fer_link4">
     <visual name="fer_link4_visual">
       <geometry>
@@ -116,8 +124,9 @@
       </geometry>
     </visual>
     <collision name="fer_link4_collision">
+      <origin xyz="-0.02 0.15 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/robot_arms/fer/collision/link4.obj"/>
+        <box size="0.08 0.25 0.06"/>
       </geometry>
     </collision>
     <inertial>
@@ -135,7 +144,8 @@
     <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-3.0718" soft_upper_limit="-0.0698"/>
     <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
   </joint>
-  <!-- sub-link defining detailed meshes for collision with environment -->
+  
+  <!-- Link 5: Wrist 1 - simplified collision -->
   <link name="fer_link5">
     <visual name="fer_link5_visual">
       <geometry>
@@ -143,8 +153,9 @@
       </geometry>
     </visual>
     <collision name="fer_link5_collision">
+      <origin xyz="0 0 -0.03" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/robot_arms/fer/collision/link5.obj"/>
+        <cylinder radius="0.035" length="0.08"/>
       </geometry>
     </collision>
     <inertial>
@@ -162,7 +173,8 @@
     <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973"/>
     <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
   </joint>
-  <!-- sub-link defining detailed meshes for collision with environment -->
+  
+  <!-- Link 6: Wrist 2 - simplified collision -->
   <link name="fer_link6">
     <visual name="fer_link6_visual">
       <geometry>
@@ -170,8 +182,9 @@
       </geometry>
     </visual>
     <collision name="fer_link6_collision">
+      <origin xyz="0.03 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/robot_arms/fer/collision/link6.obj"/>
+        <box size="0.06 0.05 0.04"/>
       </geometry>
     </collision>
     <inertial>
@@ -189,7 +202,8 @@
     <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-0.0175" soft_upper_limit="3.7525"/>
     <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
   </joint>
-  <!-- sub-link defining detailed meshes for collision with environment -->
+  
+  <!-- Link 7: Wrist 3 - simplified collision -->
   <link name="fer_link7">
     <visual name="fer_link7_visual">
       <geometry>
@@ -197,8 +211,9 @@
       </geometry>
     </visual>
     <collision name="fer_link7_collision">
+      <origin xyz="0 0 0.03" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/robot_arms/fer/collision/link7.obj"/>
+        <cylinder radius="0.03" length="0.06"/>
       </geometry>
     </collision>
     <inertial>
@@ -216,28 +231,34 @@
     <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973"/>
     <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
   </joint>
+  
+  <!-- Flange link -->
   <link name="fer_link8"/>
   <joint name="fer_joint8" type="fixed">
     <origin rpy="0 0 0" xyz="0 0 0.107"/>
     <parent link="fer_link7"/>
     <child link="fer_link8"/>
   </joint>
+  
+  <!-- Hand attachment -->
   <joint name="fer_hand_joint" type="fixed">
     <parent link="fer_link8"/>
     <child link="fer_hand"/>
     <origin rpy="0 0 -0.7853981633974483" xyz="0 0 0"/>
   </joint>
-  <!-- sub-link defining detailed meshes for collision with environment -->
+  
+  <!-- Hand palm - minimal collision to avoid interference -->
   <link name="fer_hand">
     <visual name="fer_hand_visual">
       <geometry>
         <mesh filename="../meshes/robot_ee/franka_hand_white/visual/hand.dae"/>
       </geometry>
     </visual>
-    <!-- Use proper hand collision mesh -->
+    <!-- Minimal palm collision - just a small box to avoid complete passthrough -->
     <collision name="fer_hand_collision">
+      <origin xyz="0 0 0.02" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="../meshes/robot_ee/franka_hand_white/collision/hand.obj"/>
+        <box size="0.04 0.03 0.03"/>
       </geometry>
     </collision>
     <inertial>
@@ -246,24 +267,27 @@
       <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.0025" iyz="0" izz="0.0017"/>
     </inertial>
   </link>
-  <!-- Define the hand_tcp frame -->
+  
+  <!-- Hand TCP frame -->
   <link name="fer_hand_tcp"/>
   <joint name="fer_hand_tcp_joint" type="fixed">
     <origin rpy="0 0 0" xyz="0 0 0.1034"/>
     <parent link="fer_hand"/>
     <child link="fer_hand_tcp"/>
   </joint>
+  
+  <!-- Left finger - proper grasping collision -->
   <link name="fer_leftfinger">
     <visual name="fer_leftfinger_visual">
       <geometry>
         <mesh filename="../meshes/robot_ee/franka_hand_white/visual/finger.dae"/>
       </geometry>
     </visual>
-    <!-- Simple finger collision optimized for grasping -->
-    <collision name="fer_leftfinger_grasp">
-      <origin rpy="0 0 0" xyz="0 0.005 0.03"/>
+    <!-- Proper finger collision for grasping - single box covering finger tip area -->
+    <collision name="fer_leftfinger_collision">
+      <origin rpy="0 0 0" xyz="0 0.006 0.025"/>
       <geometry>
-        <box size="0.01 0.01 0.04"/>
+        <box size="0.008 0.012 0.035"/>
       </geometry>
     </collision>
     <inertial>
@@ -271,6 +295,8 @@
       <inertia ixx="1e-5" iyy="1e-5" izz="1e-5" ixy="0" ixz="0" iyz="0"/>
     </inertial>
   </link>
+  
+  <!-- Right finger - proper grasping collision -->
   <link name="fer_rightfinger">
     <visual name="fer_rightfinger_visual">
       <origin rpy="0 0 3.141592653589793" xyz="0 0 0"/>
@@ -278,11 +304,11 @@
         <mesh filename="../meshes/robot_ee/franka_hand_white/visual/finger.dae"/>
       </geometry>
     </visual>
-    <!-- Simple finger collision optimized for grasping -->
-    <collision name="fer_rightfinger_grasp">
-      <origin rpy="0 0 0" xyz="0 -0.005 0.03"/>
+    <!-- Proper finger collision for grasping - single box covering finger tip area -->
+    <collision name="fer_rightfinger_collision">
+      <origin rpy="0 0 0" xyz="0 -0.006 0.025"/>
       <geometry>
-        <box size="0.01 0.01 0.04"/>
+        <box size="0.008 0.012 0.035"/>
       </geometry>
     </collision>
     <inertial>
@@ -290,6 +316,8 @@
       <inertia ixx="1e-5" iyy="1e-5" izz="1e-5" ixy="0" ixz="0" iyz="0"/>
     </inertial>
   </link>
+  
+  <!-- Finger joints -->
   <joint name="fer_finger_joint1" type="prismatic">
     <parent link="fer_hand"/>
     <child link="fer_leftfinger"/>
@@ -307,4 +335,4 @@
     <mimic joint="fer_finger_joint1"/>
     <dynamics damping="0.6"/>
   </joint>
-</robot> 
+</robot>
