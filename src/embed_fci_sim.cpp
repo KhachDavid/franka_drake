@@ -270,6 +270,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       plant_context_ = plant_->CreateDefaultContext();
       integral_errors_ = Eigen::VectorXd::Zero(arm_joints_);
       velocity_integral_errors_ = Eigen::VectorXd::Zero(arm_joints_);
+      dq_filtered_internal_ = Eigen::VectorXd::Zero(arm_joints_);
       // Build mapping from arm joints to full-plant velocity indices for gravity selection.
       arm_velocity_indices_.clear();
       arm_velocity_indices_.reserve(arm_joints_);
@@ -311,6 +312,12 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       const auto& x = this->get_input_port(state_in_).Eval(ctx);
       Eigen::VectorXd q = x.head(total_joints_);
       Eigen::VectorXd dq = x.tail(total_joints_);
+      // Low-pass filter measured joint velocities to reduce derivative noise and jitter.
+      // y = alpha * y + (1 - alpha) * x, with alpha close to 1 for light smoothing.
+      static const double kVelAlpha = 0.95;  // ~20 ms time constant at 1 kHz
+      for (int i = 0; i < arm_joints_ && i < dq.size(); ++i) {
+        dq_filtered_internal_[i] = kVelAlpha * dq_filtered_internal_[i] + (1.0 - kVelAlpha) * dq[i];
+      }
       // Seed the internal setpoint filter with the current joint positions on first use
       // to avoid a large transient on the first command cycle.
       static bool q_filter_seeded = false;
@@ -356,7 +363,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         const double Kp[7] = {40,40,40,40,26,22,18};
         const double Ki[7] = {4,4,4,4,2.6,2.2,1.8};
         for (int i = 0; i < arm_joints_; ++i) {
-          double e = st.dq_cmd[i] - dq[i];
+          double e = st.dq_cmd[i] - dq_filtered_internal_[i];
           velocity_integral_errors_[i] = std::clamp(velocity_integral_errors_[i] + e * 0.001, -0.5, 0.5);
           tau[i] = Kp[i] * e + Ki[i] * velocity_integral_errors_[i];
         }
@@ -443,8 +450,8 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       else if (st.has_position_command) {
         // Position hold/tracking: add small integral term to kill residual drift
         const double K[7]  = {100,100,100,100,80,60,40};     // stiffness
-        const double D[7]  = {14,14,12,12,10,8,6};           // damping (slightly higher to hold still)
-        const double Ki[7] = {2.0,2.0,2.0,2.0,1.5,1.0,1.0};  // small integral to remove steady-state
+        const double D[7]  = {16,16,14,14,12,10,8};          // a bit more damping for payloads
+        const double Ki[7] = {0.6,0.6,0.6,0.6,0.4,0.3,0.25}; // gentler integral to avoid chatter
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
 
         // Rate-limited setpoint tracking
@@ -452,7 +459,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         for (int i = 0; i < arm_joints_; ++i) {
           double q_target = plant_to_franka_sign[i] * st.q_cmd[i];
           double q_current = q[i];
-          double dq_current = dq[i];
+          double dq_current = dq_filtered_internal_[i];
 
           double q_error_cmd = q_target - q_cmd_filtered_[i];
           double max_step = max_rate * 0.001;
@@ -462,8 +469,16 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
 
           // Control with PI-D
           double pos_error = q_cmd_filtered_[i] - q_current;
-          // Integrate position error with clamp
-          integral_errors_[i] = std::clamp(integral_errors_[i] + pos_error * 0.001, -0.2, 0.2);
+          // Conditional integral to cancel gravity/payload bias without exciting noise
+          // - Leak slowly to avoid stale bias when payload changes
+          // - Only integrate when near standstill and not far from the target
+          static const double kIntLeak = 0.9995;               // ~1.4 s half-life at 1 kHz
+          static const double kVelStill = 0.02;                // rad/s
+          static const double kPosNear = 0.15;                 // rad
+          integral_errors_[i] *= kIntLeak;
+          if (std::abs(dq_current) < kVelStill && std::abs(pos_error) < kPosNear) {
+            integral_errors_[i] = std::clamp(integral_errors_[i] + pos_error * 0.001, -0.1, 0.1);
+          }
           tau[i] = K[i] * pos_error + Ki[i] * integral_errors_[i] - D[i] * dq_current;
         }
       } else {
@@ -529,6 +544,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
     mutable Eigen::VectorXd integral_errors_;
     mutable Eigen::VectorXd velocity_integral_errors_;
     mutable std::array<double,7> q_cmd_filtered_{{0,0,0,0,0,0,0}};
+    mutable Eigen::VectorXd dq_filtered_internal_;
     std::vector<int> arm_velocity_indices_;
   };
 
