@@ -28,6 +28,7 @@
 #include <drake/geometry/scene_graph.h>
 #include <drake/systems/framework/diagram_builder.h>
 #include <cstdlib>
+#include <fmt/format.h>
 #include <filesystem>
 
 #include "franka_drake/fci_sim_server.h"
@@ -325,7 +326,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       Eigen::VectorXd tau_g_arm = Eigen::VectorXd::Zero(arm_joints_);
 
       static const std::array<double, 7> torque_limits{87.0,87.0,87.0,87.0,50.0,50.0,40.0};
-      static const double max_tau_rate = 20000.0; // Nm/s (more relaxed to track fast trajectories)
+      static const double max_tau_rate = 5000.0; // Nm/s, safer slew rate for stability
       static Eigen::VectorXd last_tau = Eigen::VectorXd::Zero(7);
 
       const bool commands_active = (std::chrono::duration<double>(std::chrono::steady_clock::now() - st.last_command_time).count() < 0.1);
@@ -350,7 +351,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         out->SetFromVector(tau_out);
         return;
       }
-      // VELOCITY CONTROL (slightly lower gains to reduce chatter with client PI)
+      // VELOCITY CONTROL (requires fresh commands)
       else if (st.has_velocity_command && commands_active) {
         const double Kp[7] = {40,40,40,40,26,22,18};
         const double Ki[7] = {4,4,4,4,2.6,2.2,1.8};
@@ -360,12 +361,54 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
           tau[i] = Kp[i] * e + Ki[i] * velocity_integral_errors_[i];
         }
       }
-      // CARTESIAN CONTROL (position or velocity)
+      // CARTESIAN CONTROL (position or velocity; requires fresh commands)
       else if ((st.has_cartesian_command || st.has_cartesian_velocity_command) && commands_active) {
-        Eigen::MatrixXd J(6, arm_joints_);
-        plant_->CalcJacobianSpatialVelocity(*plant_context_, drake::multibody::JacobianWrtVariable::kQDot,
-                                            plant_->GetFrameByName(st.ee_frame_name, robot_), Eigen::Vector3d::Zero(),
-                                            plant_->world_frame(), plant_->world_frame(), &J);
+        // Optional throttled debug
+        static const bool kDebugCart = false;
+        auto log_throttled = [&](const std::string& msg) {
+          if (!kDebugCart) return;
+          static auto last = std::chrono::steady_clock::now();
+          auto now = std::chrono::steady_clock::now();
+          if (std::chrono::duration<double>(now - last).count() > 0.5) {
+            std::cout << msg << std::endl;
+            last = now;
+          }
+        };
+
+        // Calculate Jacobian with respect to ALL plant velocities
+        const int plant_nv = plant_->num_velocities();
+        Eigen::MatrixXd J_full(6, plant_nv);
+
+        try {
+          // Check if the frame exists
+          if (!plant_->HasFrameNamed(st.ee_frame_name, robot_)) {
+            log_throttled(std::string("[ERROR] Frame not found: ") + st.ee_frame_name);
+            tau.setZero();
+            return;
+          }
+
+          plant_->CalcJacobianSpatialVelocity(*plant_context_, drake::multibody::JacobianWrtVariable::kV,
+                                              plant_->GetFrameByName(st.ee_frame_name, robot_), Eigen::Vector3d::Zero(),
+                                              plant_->world_frame(), plant_->world_frame(), &J_full);
+        } catch (const std::exception& e) {
+          log_throttled(std::string("[ERROR] CalcJacobianSpatialVelocity: ") + e.what());
+          tau.setZero();
+          return;
+        }
+
+        // Extract just the robot arm columns using precomputed global velocity indices
+        Eigen::MatrixXd J_arm(6, arm_joints_);
+        for (int i = 0; i < arm_joints_ && i < static_cast<int>(arm_velocity_indices_.size()); ++i) {
+          J_arm.col(i) = J_full.col(arm_velocity_indices_[i]);
+        }
+
+        // Build dq_arm from the plant-global velocity vector to match J_full columns
+        const Eigen::VectorXd v_full = plant_->GetVelocities(*plant_context_);
+        Eigen::VectorXd dq_arm(arm_joints_);
+        for (int i = 0; i < arm_joints_ && i < static_cast<int>(arm_velocity_indices_.size()); ++i) {
+          dq_arm[i] = v_full[arm_velocity_indices_[i]];
+        }
+
         Eigen::VectorXd F(6);
         if (st.has_cartesian_command) {
           Eigen::Matrix4d T_cmd;
@@ -376,49 +419,52 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
           drake::math::RotationMatrixd R_err = X_W_EE_cmd.rotation() * X_W_EE.rotation().inverse();
           Eigen::AngleAxisd aa(R_err.matrix());
           Eigen::Vector3d o_err = aa.angle() * aa.axis();
-          const double Kt = 100.0, Kr = 30.0, Dt = 20.0, Dr = 10.0;
-          Eigen::VectorXd v_ee = J * dq.head(arm_joints_);
+          const double Kt = 30.0, Kr = 10.0, Dt = 8.0, Dr = 4.0;
+          const Eigen::VectorXd v_ee = J_arm * dq_arm;
           F.head<3>() = Kt * p_err - Dt * v_ee.head<3>();
           F.tail<3>() = Kr * o_err - Dr * v_ee.tail<3>();
         } else {
-          Eigen::VectorXd v_ee = J * dq.head(arm_joints_);
-          const double Kpt = 80.0, Kpr = 20.0;
+          const double Kpt = 25.0, Kpr = 8.0;
+          const Eigen::VectorXd v_ee = J_arm * dq_arm;
           Eigen::VectorXd v_ref(6);
           for (int i = 0; i < 6; ++i) v_ref[i] = st.O_dP_EE_cmd[i];
-          Eigen::VectorXd v_err = v_ref - v_ee;
+          const Eigen::VectorXd v_err = v_ref - v_ee;
           F.head<3>() = Kpt * v_err.head<3>();
           F.tail<3>() = Kpr * v_err.tail<3>();
         }
-        tau = J.transpose() * F;
+
+        // Clamp task-space forces to safe limits
+        for (int i = 0; i < 3; ++i) F[i] = std::clamp(F[i], -150.0, 150.0);
+        for (int i = 3; i < 6; ++i) F[i] = std::clamp(F[i], -10.0, 10.0);
+
+        tau = J_arm.transpose() * F;
       }
-      // POSITION CONTROL (only when we have active position commands)
-      else if (st.has_position_command && commands_active) {
-        // Simple, stable PD controller - back to basics
-        const double K[7]  = {100,100,100,100,80,60,40};     // Conservative stiffness
-        const double D[7]  = {10,10,10,10,8,6,4};            // Conservative damping
+      // POSITION CONTROL / HOLD (keeps holding last q_cmd even after motion finishes)
+      else if (st.has_position_command) {
+        // Position hold/tracking: add small integral term to kill residual drift
+        const double K[7]  = {100,100,100,100,80,60,40};     // stiffness
+        const double D[7]  = {14,14,12,12,10,8,6};           // damping (slightly higher to hold still)
+        const double Ki[7] = {2.0,2.0,2.0,2.0,1.5,1.0,1.0};  // small integral to remove steady-state
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
-        
-        // Simple rate-limited setpoint tracking
-        const double max_rate = 1.0; // rad/s - conservative
+
+        // Rate-limited setpoint tracking
+        const double max_rate = 1.0; // rad/s
         for (int i = 0; i < arm_joints_; ++i) {
           double q_target = plant_to_franka_sign[i] * st.q_cmd[i];
           double q_current = q[i];
           double dq_current = dq[i];
-          
-          // Simple rate limiting
-          double q_error = q_target - q_cmd_filtered_[i];
+
+          double q_error_cmd = q_target - q_cmd_filtered_[i];
           double max_step = max_rate * 0.001;
-          if (q_error > max_step) {
-            q_cmd_filtered_[i] += max_step;
-          } else if (q_error < -max_step) {
-            q_cmd_filtered_[i] -= max_step;
-          } else {
-            q_cmd_filtered_[i] = q_target;
-          }
-          
-          // Simple PD control
+          if (q_error_cmd > max_step) q_cmd_filtered_[i] += max_step;
+          else if (q_error_cmd < -max_step) q_cmd_filtered_[i] -= max_step;
+          else q_cmd_filtered_[i] = q_target;
+
+          // Control with PI-D
           double pos_error = q_cmd_filtered_[i] - q_current;
-          tau[i] = K[i] * pos_error - D[i] * dq_current;
+          // Integrate position error with clamp
+          integral_errors_[i] = std::clamp(integral_errors_[i] + pos_error * 0.001, -0.2, 0.2);
+          tau[i] = K[i] * pos_error + Ki[i] * integral_errors_[i] - D[i] * dq_current;
         }
       } else {
         // Idle: zero from controller; g_comp holds posture.
@@ -783,12 +829,51 @@ void FciSimEmbedder::RegisterGripper(const GripperSpec& spec) {
 }
 
 void FciSimEmbedder::SetGripperWidth(double width_m, double speed_mps) {
+  (void)speed_mps; // currently unused
+  // Ensure the arm is approximately still before changing gripper width to avoid
+  // unstable contact dynamics during motion. We wait up to a short timeout, and
+  // require velocities to remain below a threshold for a brief stable window.
+  const double kVelThresholdRadPerSec = 0.03;   // max joint speed considered "still"
+  const double kStableWindowSec = 0.20;         // must be still for this duration
+  const double kMaxWaitSec = 1.0;               // don't block gripper server too long
+
+  auto is_arm_still = [&]() -> bool {
+    auto& st_local = GetSharedState();
+    std::lock_guard<std::mutex> lk(st_local.mutex);
+    double max_abs_dq = 0.0;
+    for (int i = 0; i < 7; ++i) {
+      max_abs_dq = std::max(max_abs_dq, std::abs(st_local.dq[i]));
+    }
+    return max_abs_dq < kVelThresholdRadPerSec;
+  };
+
+  const auto t_start = std::chrono::steady_clock::now();
+  std::optional<std::chrono::steady_clock::time_point> t_still_begin;
+  while (true) {
+    const auto now = std::chrono::steady_clock::now();
+    const double waited = std::chrono::duration<double>(now - t_start).count();
+    if (waited > kMaxWaitSec) break;
+
+    if (is_arm_still()) {
+      if (!t_still_begin.has_value()) {
+        t_still_begin = now;
+      } else if (std::chrono::duration<double>(now - *t_still_begin).count() >= kStableWindowSec) {
+        break; // stable long enough
+      }
+    } else {
+      t_still_begin.reset();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+
+  // Now apply the target width.
   auto& st = GetSharedState();
-  std::lock_guard<std::mutex> lock(st.mutex);
-  (void)speed_mps; // speed is not used in this immediate-set implementation
-  const double w_des = std::clamp(width_m, st.gripper_min_width, st.gripper_max_width);
-  st.gripper_target_width = w_des;  // set immediately so single calls take effect
-  st.gripper_target_user_set = true;
+  {
+    std::lock_guard<std::mutex> lock(st.mutex);
+    const double w_des = std::clamp(width_m, st.gripper_min_width, st.gripper_max_width);
+    st.gripper_target_width = w_des;
+    st.gripper_target_user_set = true;
+  }
 }
 
 double FciSimEmbedder::GetGripperWidth() const {
