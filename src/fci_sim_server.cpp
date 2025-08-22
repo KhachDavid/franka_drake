@@ -715,23 +715,9 @@ void FrankaFciSimServer::udp_control_loop() {
         
         last_state_time = current_time;
         
-        // After first state following Move command, send TCP Move success
-        if (control_mode_active_.load() && !first_state_after_move_sent_.load() && current_motion_id_.load() > 0) {
-          protocol::CommandHeader success_header(
-            protocol::Command::kMove,
-            current_motion_id_.load(),
-            sizeof(protocol::CommandHeader) + sizeof(protocol::Move::Response)
-          );
-          
-          protocol::Move::Response success_response(protocol::Move::Status::kSuccess);
-          
-          if (write_exact(tcp_client_fd_, &success_header, sizeof(success_header)) &&
-              write_exact(tcp_client_fd_, &success_response, sizeof(success_response))) {
-            log_message("[FCI Sim Server] Sent Move kSuccess response after first state");
-          }
-          
-          first_state_after_move_sent_ = true;
-        }
+        // Do not send Move success here. Only send success when motion finishes
+        // (upon receiving motion_generation_finished=true). This matches FCI
+        // semantics and avoids clients thinking the motion completed early.
         
         // Debug every 1000 loops
         if (loop_count % 1000 == 0) {

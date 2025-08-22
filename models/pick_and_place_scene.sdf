@@ -53,8 +53,8 @@
           <surface>
             <friction>
               <ode>
-                <mu>0.10</mu>
-                <mu2>0.10</mu2>
+                <mu>0.1</mu>
+                <mu2>0.1</mu2>
               </ode>
             </friction>
           </surface>
@@ -67,13 +67,13 @@
       <pose>0.41 -0.15 0.08 0 0 0</pose>
       <link name="box_link">
         <inertial>
-          <!-- 4 cm cube at PP (density ~1050 kg/m^3) => m ≈ 0.04^3 * 1050 ≈ 0.0672 kg -->
-          <mass>0.07</mass>
-          <!-- Solid cube inertia: I = (1/6) m a^2, a = 0.04 m; I ≈ (1/6)*0.07*0.0016 ≈ 1.8667e-5 -->
+          <!-- 2-inch (0.0508 m) ABS cube; mass ≈ 0.067 kg -->
+          <mass>0.0672</mass>
+          <!-- Solid cube inertia: I = (1/6) m a^2 with a = 0.0508 m -->
           <inertia>
-            <ixx>1.87e-05</ixx>
-            <iyy>1.87e-05</iyy>
-            <izz>1.87e-05</izz>
+            <ixx>2.88e-05</ixx>
+            <iyy>2.88e-05</iyy>
+            <izz>2.88e-05</izz>
             <ixy>0</ixy>
             <ixz>0</ixz>
             <iyz>0</iyz>
@@ -97,17 +97,18 @@
             </box>
           </geometry>
           <surface>
-            <!-- Increase friction to improve grasp stability; add restitution damping off -->
+            <!-- High friction to make the cube stick between fingers in sim -->
             <friction>
               <ode>
-                <mu>0.1</mu>
-                <mu2>0.1</mu2>
+                <mu>50.0</mu>
+                <mu2>50.0</mu2>
               </ode>
             </friction>
             <contact>
               <ode>
-                <kp>5.0e5</kp>
-                <kd>0.1</kd>
+                <!-- Keep a relatively stiff contact; a bit more damping to reduce chatter -->
+                <kp>15.0e5</kp>
+                <kd>15.0</kd>
               </ode>
             </contact>
           </surface>

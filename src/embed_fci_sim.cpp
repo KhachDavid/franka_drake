@@ -82,8 +82,10 @@ struct SharedRobotState {
   bool gripper_target_user_set = false;
   double gripper_min_width = 0.0;
   double gripper_max_width = 0.08;
-  double gripper_kp = 200.0;
-  double gripper_kd = 5.0;
+  // Stronger gains so contact force reaches actuator limits when an object is held.
+  // With 100 N actuator limits per finger, these gains will quickly clamp and hold.
+  double gripper_kp = 6000.0;
+  double gripper_kd = 20.0;
   double gripper_left_sign = 1.0;
   double gripper_right_sign = 1.0;
   double gripper_target_width = 0.08;
