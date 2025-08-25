@@ -17,7 +17,7 @@ namespace franka_fci_sim {
 
 namespace {
 std::string SelectUrdf(RobotConfig cfg) {
-  if (cfg == RobotConfig::Gripper) return "models/urdf/fer_drake_gripper_fixed.urdf";
+  if (cfg == RobotConfig::Gripper) return "models/urdf/fer_drake.urdf";
   return "models/urdf/fer_drake_fingerless.urdf";
 }
 }

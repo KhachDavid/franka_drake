@@ -3,7 +3,7 @@
   <name>franka_drake</name>
   <version>1.0.0</version>
   <description>Franka robot models for Drake simulation</description>
-  <maintainer email="user@example.com">Drake User</maintainer>
+  <maintainer email="davidkh@u.northwestern.edu">Drake User</maintainer>
   <license>MIT</license>
   
   <buildtool_depend>cmake</buildtool_depend>

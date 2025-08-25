@@ -26,7 +26,7 @@ TEST(PickAndPlaceHelpers, IKFindsSolutionForNearbyPose) {
   // Parse robot explicitly to avoid wiring full FCI systems in CI
   drake::multibody::Parser parser(&plant, &scene_graph);
   const std::string pkg_xml = franka_fci_sim::ResolveModelPath("models/urdf/package.xml");
-  const std::string urdf = franka_fci_sim::ResolveModelPath("models/urdf/fer_drake_gripper_fixed.urdf");
+  const std::string urdf = franka_fci_sim::ResolveModelPath("models/urdf/fer_drake.urdf");
   parser.package_map().AddPackageXml(pkg_xml);
   const auto robot = parser.AddModels(urdf)[0];
   plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("base", robot));
@@ -116,7 +116,7 @@ TEST(PickAndPlaceHelpers, WaitAndTrajectoryRun) {
   // Minimal robot diagram only
   drake::multibody::Parser parser3(&plant, &scene_graph);
   const std::string pkg_xml3 = franka_fci_sim::ResolveModelPath("models/urdf/package.xml");
-  const std::string urdf3 = franka_fci_sim::ResolveModelPath("models/urdf/fer_drake_gripper_fixed.urdf");
+  const std::string urdf3 = franka_fci_sim::ResolveModelPath("models/urdf/fer_drake.urdf");
   parser3.package_map().AddPackageXml(pkg_xml3);
   const auto robot = parser3.AddModels(urdf3)[0];
   plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("base", robot));

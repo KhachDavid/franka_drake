@@ -932,7 +932,7 @@ std::unique_ptr<FciSimEmbedder> FciSimEmbedder::AutoAttach(
     }
     const std::string pkg_xml_in = auto_options.package_xml_path.empty() ? std::string("models/urdf/package.xml") : auto_options.package_xml_path;
     const std::string urdf_in = !auto_options.urdf_path_override.empty() ? auto_options.urdf_path_override
-                                : (auto_options.prefer_gripper ? std::string("models/urdf/fer_drake_gripper_fixed.urdf")
+                                : (auto_options.prefer_gripper ? std::string("models/urdf/fer_drake.urdf")
                                                                : std::string("models/urdf/fer_drake_fingerless.urdf"));
     const std::string pkg_xml = ResolveModelPath(pkg_xml_in);
     const std::string urdf = ResolveModelPath(urdf_in);
