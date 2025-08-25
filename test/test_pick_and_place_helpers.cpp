@@ -80,7 +80,7 @@ TEST(PickAndPlaceHelpers, AttachAndDetachObjectDoNotThrow) {
   // Minimal robot only; no scene. Skip if no free object exists.
   drake::multibody::Parser parser2(&plant, &scene_graph);
   const std::string pkg_xml2 = franka_fci_sim::ResolveModelPath("models/urdf/package.xml");
-  const std::string urdf2 = franka_fci_sim::ResolveModelPath("models/urdf/fer_drake_gripper_fixed.urdf");
+  const std::string urdf2 = franka_fci_sim::ResolveModelPath("models/urdf/fer_drake.urdf");
   parser2.package_map().AddPackageXml(pkg_xml2);
   const auto robot = parser2.AddModels(urdf2)[0];
   plant.WeldFrames(plant.world_frame(), plant.GetFrameByName("base", robot));
