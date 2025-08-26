@@ -28,6 +28,8 @@
 #include <drake/math/rigid_transform.h>
 #include <drake/multibody/parsing/parser.h>
 #include <drake/multibody/plant/multibody_plant.h>
+#include <drake/multibody/inverse_kinematics/inverse_kinematics.h>
+#include <drake/solvers/solve.h>
 #include <drake/multibody/tree/revolute_joint.h>
 #include <drake/multibody/tree/prismatic_joint.h>
 #include <drake/systems/controllers/inverse_dynamics.h>
@@ -777,6 +779,57 @@ protocol::RobotState FciSimEmbedder::Impl::MakeRobotStateSnapshot() {
   rs.O_T_EE_c = st.O_T_EE_cmd;
   rs.q_d = st.has_position_command ? st.q_cmd : st.q;
   rs.dq_d.fill(0.0);
+  // Provide q_d for Cartesian motion modes by solving IK toward O_T_EE_cmd.
+  // This mirrors real FCI behavior where q_d reflects the internal IK result with one-step delay.
+  if (st.has_cartesian_command || st.has_cartesian_velocity_command) {
+    try {
+      // Build a context with current joint positions of this robot instance.
+      auto context = plant->CreateDefaultContext();
+      {
+        Eigen::VectorXd q_inst = Eigen::VectorXd::Zero(plant->num_positions(robot));
+        for (int i = 0; i < std::min(7, static_cast<int>(q_inst.size())); ++i) q_inst[i] = st.q[i];
+        plant->SetPositions(context.get(), robot, q_inst);
+      }
+
+      // Desired pose from st.O_T_EE_cmd
+      Eigen::Matrix4d T_cmd;
+      for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r) T_cmd(r, c) = st.O_T_EE_cmd[c * 4 + r];
+      const drake::math::RigidTransformd X_W_EE_cmd(T_cmd);
+
+      // Setup IK: match end-effector pose with gentle tolerances, regularize to current q.
+      const auto& ee = plant->GetFrameByName(st.ee_frame_name, robot);
+      drake::multibody::InverseKinematics ik(*plant);
+      const Eigen::Vector3d p_des = X_W_EE_cmd.translation();
+      const drake::math::RotationMatrixd R_des = X_W_EE_cmd.rotation();
+      // Tight but feasible tolerances
+      const Eigen::Vector3d p_tol(0.002, 0.002, 0.002); // 2 mm box
+      ik.AddPositionConstraint(ee, Eigen::Vector3d::Zero(), plant->world_frame(), p_des - p_tol, p_des + p_tol);
+      const double theta_bound = 5.0 * M_PI / 180.0; // 5 deg
+      ik.AddOrientationConstraint(ee, drake::math::RotationMatrixd(), plant->world_frame(), R_des, theta_bound);
+      // Regularize toward a persistent seed (previous solution) for continuity
+      auto* prog = ik.get_mutable_prog();
+      const auto& qvar = ik.q();
+      Eigen::VectorXd q_all = plant->GetPositions(*context);
+      static Eigen::VectorXd q_seed;
+      static int q_seed_size = -1;
+      if (q_seed_size != q_all.size()) { q_seed = q_all; q_seed_size = q_all.size(); }
+      const double w_reg = 1.0;
+      prog->AddQuadraticCost(w_reg * (qvar - q_seed).transpose() * (qvar - q_seed));
+      prog->SetInitialGuess(qvar, q_seed);
+
+      const auto result = drake::solvers::Solve(*prog);
+      if (result.is_success()) {
+        Eigen::VectorXd q_sol = result.GetSolution(qvar);
+        auto context_sol = plant->CreateDefaultContext();
+        plant->SetPositions(context_sol.get(), q_sol);
+        Eigen::VectorXd q_inst = plant->GetPositions(*context_sol, robot);
+        for (int i = 0; i < 7 && i < q_inst.size(); ++i) rs.q_d[i] = q_inst[i];
+        q_seed = q_sol; // persist for next step
+      }
+    } catch (const std::exception&) {
+      // On failure, keep fallback q_d logic already assigned above.
+    }
+  }
   for (int i = 0; i < 7; ++i) rs.tau_J_d[i] = st.tau_cmd[i];
   rs.F_T_EE[0] = rs.F_T_EE[5] = rs.F_T_EE[10] = rs.F_T_EE[15] = 1.0;
   rs.EE_T_K[0] = rs.EE_T_K[5] = rs.EE_T_K[10] = rs.EE_T_K[15] = 1.0;
