@@ -485,78 +485,40 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // CARTESIAN CONTROL (position or velocity; requires fresh commands)
       else if ((st.has_cartesian_command || st.has_cartesian_velocity_command) && commands_active) {
-        // If controller mode is JointImpedance, synthesize joint-impedance torques using
-        // q_d obtained via resolved-rate IK from the commanded Cartesian pose, matching
-        // libfranka's joint_impedance_control structure (IK -> q_d, then tau = K(q_d-q)-D dq).
+        // If controller mode is JointImpedance with a Cartesian pose stream,
+        // prefer JOINT-SPACE impedance to the IK-generated target in st.q_cmd.
         if (st.current_controller_mode == protocol::Move::ControllerMode::kJointImpedance && st.has_cartesian_command) {
-          // Calculate Jacobian for the EE and extract arm columns
-          const int plant_nv = plant_->num_velocities();
-          Eigen::MatrixXd J_full(6, plant_nv);
-          try {
-            if (!plant_->HasFrameNamed(st.ee_frame_name, robot_)) {
-              tau.setZero();
-              return;
-            }
-            plant_->CalcJacobianSpatialVelocity(*plant_context_, drake::multibody::JacobianWrtVariable::kV,
-                                                plant_->GetFrameByName(st.ee_frame_name, robot_), Eigen::Vector3d::Zero(),
-                                                plant_->world_frame(), plant_->world_frame(), &J_full);
-          } catch (const std::exception&) {
-            tau.setZero();
-            return;
-          }
-          Eigen::MatrixXd J_arm(6, arm_joints_);
-          for (int i = 0; i < arm_joints_ && i < static_cast<int>(arm_velocity_indices_.size()); ++i) {
-            J_arm.col(i) = J_full.col(arm_velocity_indices_[i]);
-          }
-          // Build dq_arm consistent with the Jacobian columns
-          const Eigen::VectorXd v_full = plant_->GetVelocities(*plant_context_);
-          Eigen::VectorXd dq_arm(arm_joints_);
-          for (int i = 0; i < arm_joints_ && i < static_cast<int>(arm_velocity_indices_.size()); ++i) {
-            dq_arm[i] = v_full[arm_velocity_indices_[i]];
-          }
-
-          // Compute desired pose from command
-          Eigen::Matrix4d T_cmd; for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r) T_cmd(r,c) = st.O_T_EE_cmd[c*4 + r];
-          drake::math::RigidTransformd X_W_EE_cmd(T_cmd);
-          const drake::math::RigidTransformd X_W_EE = plant_->CalcRelativeTransform(*plant_context_, plant_->world_frame(), plant_->GetFrameByName(st.ee_frame_name, robot_));
-          // Orientation error as small-angle quaternion vector (sign-corrected)
-          Eigen::Vector3d p_err = X_W_EE_cmd.translation() - X_W_EE.translation();
-          Eigen::Quaterniond q_meas(X_W_EE.rotation().matrix());
-          Eigen::Quaterniond q_des(X_W_EE_cmd.rotation().matrix());
-          if (q_meas.coeffs().dot(q_des.coeffs()) < 0.0) q_des.coeffs() = -q_des.coeffs();
-          Eigen::Quaterniond q_err = q_des * q_meas.conjugate();
-          Eigen::Vector3d o_err(2.0 * q_err.x(), 2.0 * q_err.y(), 2.0 * q_err.z());
-
-          // Resolved-rate IK to update q_d
-          const double lambda2 = 0.03 * 0.03;
-          const double Kp_pos = 8.0;
-          const double Kp_rot = 3.0;
-          Eigen::VectorXd x_err(6); x_err.head<3>() = Kp_pos * p_err; x_err.tail<3>() = Kp_rot * o_err;
-          Eigen::MatrixXd JJt = J_arm * J_arm.transpose();
-          for (int i = 0; i < 6; ++i) JJt(i,i) += lambda2;
-          Eigen::VectorXd dq_task = J_arm.transpose() * JJt.ldlt().solve(x_err);
-          // Nullspace regularization toward previous q_d to keep branch
-          if (!qd_prev_init_) { qd_prev_ = q.head(arm_joints_); qd_prev_init_ = true; }
-          Eigen::MatrixXd I = Eigen::MatrixXd::Identity(arm_joints_, arm_joints_);
-          Eigen::MatrixXd Jsharp = J_arm.transpose() * JJt.ldlt().solve(Eigen::MatrixXd::Identity(6,6));
-          Eigen::MatrixXd N = I - Jsharp * J_arm;
-          Eigen::MatrixXd Kn = Eigen::MatrixXd::Zero(arm_joints_, arm_joints_);
-          for (int i = 0; i < arm_joints_; ++i) Kn(i,i) = (i < 4 ? 0.2 : 0.8);
-          Kn(3,3) += 1.5; Kn(5,5) += 1.5;
-          Eigen::VectorXd dq_null = N * Kn * (qd_prev_ - q.head(arm_joints_));
-          Eigen::VectorXd dq_des = dq_task + dq_null;
-          const double dt = 0.001;
-          const double dq_cap[7] = {0.3,0.3,0.3,0.3,0.15,0.15,0.15};
-          for (int i = 0; i < arm_joints_ && i < 7; ++i) dq_des[i] = std::clamp(dq_des[i], -dq_cap[i], dq_cap[i]);
-          Eigen::VectorXd qd_now = qd_prev_ + dq_des * dt;
-          qd_prev_ = qd_now;
-
-          // Joint impedance torques toward qd_now
-          const double k_gains[7] = {600,600,600,600,250,150,50};
-          const double d_gains[7] = {50,50,50,50,30,25,15};
+          // Reuse the hold PI-D with leak/clamp, but track st.q_cmd (populated by IK).
+          const double K[7]  = {100,100,100,100,80,60,40};
+          double D[7]  = {16,16,14,14,12,10,8};
+          D[3] *= 1.5;  // extra damping on q3
+          D[5] *= 1.5;  // extra damping on q5
+          const double Ki[7] = {0.6,0.6,0.6,0.6,0.4,0.3,0.25};
+          const double pos_deadband = 0.002;
+          const double max_rate = 0.6; // rad/s
+          static const double kIntLeak = 0.9995;
+          static const double kVelStill = 0.02;
+          static const double kPosNear = 0.10;
           for (int i = 0; i < arm_joints_ && i < 7; ++i) {
-            double e = qd_now[i] - q[i];
-            tau[i] = k_gains[i] * e - d_gains[i] * dq_filtered_internal_[i];
+            double q_target = st.q_cmd[i];
+            double q_current = q[i];
+            double dq_current = dq_filtered_internal_[i];
+            // Rate-limit internal setpoint filter toward q_target
+            double q_error_cmd = q_target - q_cmd_filtered_[i];
+            if (std::abs(q_error_cmd) < pos_deadband) q_error_cmd = 0.0;
+            double max_step = max_rate * 0.001;
+            if (q_error_cmd > max_step) q_cmd_filtered_[i] += max_step;
+            else if (q_error_cmd < -max_step) q_cmd_filtered_[i] -= max_step;
+            else q_cmd_filtered_[i] = q_target;
+
+            // PI-D toward filtered setpoint with leak/clamped integral
+            double pos_error = q_cmd_filtered_[i] - q_current;
+            if (std::abs(pos_error) < pos_deadband) pos_error = 0.0;
+            integral_errors_[i] *= kIntLeak;
+            if (std::abs(dq_current) < kVelStill && std::abs(pos_error) < kPosNear) {
+              integral_errors_[i] = std::clamp(integral_errors_[i] + pos_error * 0.001, -0.1, 0.1);
+            }
+            tau[i] = K[i] * pos_error + Ki[i] * integral_errors_[i] - D[i] * dq_current;
           }
         }
         // Always add external torques from client (if any) on top, with limits and rate limit.
@@ -568,7 +530,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
             tau[i] += t_add;
           }
         }
-        {
+        if (!(st.current_controller_mode == protocol::Move::ControllerMode::kJointImpedance && st.has_cartesian_command)) {
         // Optional throttled debug
         static const bool kDebugCart = false;
         auto log_throttled = [&](const std::string& msg) {
@@ -927,6 +889,24 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
 protocol::RobotState FciSimEmbedder::Impl::MakeRobotStateSnapshot() {
   auto& st = GetSharedState();
   std::lock_guard<std::mutex> lock(st.mutex);
+  // If command stream goes stale, smoothly transition to holding the last
+  // measured joint position. This mimics firmware behavior and prevents the
+  // arm from drifting under gravity-only mode.
+  {
+    const double stale_sec = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - st.last_command_time).count();
+    // Treat anything older than 150 ms as stale (covers minor hiccups).
+    if (stale_sec > 0.150) {
+      // Switch to position hold using the latest measured joints as target.
+      st.has_position_command = true;
+      st.has_velocity_command = false;
+      st.has_cartesian_command = false;
+      st.has_cartesian_velocity_command = false;
+      for (int i = 0; i < 7; ++i) st.q_cmd[i] = st.q[i];
+      // Ask the controller to re-seed its internal filter to avoid a jump.
+      st.reinit_position_hold_filter = true;
+    }
+  }
   protocol::RobotState rs{};
   rs.q = st.q;
   rs.dq = st.dq;  // Use raw velocities to reduce double-filter lag with client-side filters
@@ -982,16 +962,29 @@ protocol::RobotState FciSimEmbedder::Impl::MakeRobotStateSnapshot() {
         prog->AddBoundingBoxConstraint(q_min_arr[i], q_max_arr[i], q_vars(pos_idx[i]));
       }
 
-      // Quadratic cost to stay close to previous solution and avoid jumps (arm joints only)
+      // Quadratic cost anchored to the start of the Cartesian streaming to keep
+      // a consistent nullspace branch (prevents slow drift like q4 offset).
+      static Eigen::VectorXd q_anchor = Eigen::VectorXd::Zero(7);
+      static bool q_anchor_init = false;
+      // Reset the anchor when command stream is stale or not in Cartesian streaming
+      const double stale_sec_for_anchor = std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - st.last_command_time).count();
+      if (!st.has_cartesian_command || stale_sec_for_anchor > 0.150) {
+        q_anchor_init = false;
+      }
+      if (!q_anchor_init) {
+        for (int i=0;i<7;++i) q_anchor[i] = st.q[i];
+        q_anchor_init = true;
+      }
+      Eigen::MatrixXd W7 = Eigen::MatrixXd::Identity(7,7);
+      for (int i=0;i<7; ++i) W7(i,i) = (i < 4 ? 6.0 : 10.0); // anchor strongly, heavier distal
+      prog->AddQuadraticErrorCost(W7, q_anchor, arm_vars);
+
+      // Initial guess: use last solution when available, else current state.
+      Eigen::VectorXd q_guess = plant->GetPositions(*context);
       static Eigen::VectorXd q_prev = Eigen::VectorXd::Zero(7);
       static bool q_prev_init = false;
       if (!q_prev_init) { for (int i=0;i<7;++i) q_prev[i] = st.q[i]; q_prev_init = true; }
-      Eigen::MatrixXd W7 = Eigen::MatrixXd::Identity(7,7);
-      for (int i=0;i<7; ++i) W7(i,i) = (i < 4 ? 4.0 : 8.0); // heavier on distal joints
-      prog->AddQuadraticErrorCost(W7, q_prev, arm_vars);
-
-      // Initial guess: previous solution for arm joints, keep other positions as current.
-      Eigen::VectorXd q_guess = plant->GetPositions(*context);
       for (int i=0;i<7; ++i) if (pos_idx[i] < q_guess.size()) q_guess[pos_idx[i]] = q_prev[i];
       prog->SetInitialGuess(q_vars, q_guess);
 
@@ -1019,6 +1012,9 @@ protocol::RobotState FciSimEmbedder::Impl::MakeRobotStateSnapshot() {
           rs.q_d[i] = qi;
           q_prev[i] = qi;
         }
+        // Expose the IK-generated joint target as the commanded joints so the
+        // impedance controller can work purely in joint space (stable, low drift).
+        for (int i=0;i<7;++i) st.q_cmd[i] = rs.q_d[i];
       } else {
         // Fallback: hold current q
         rs.q_d = st.q;
