@@ -38,6 +38,47 @@ When integrating into custom Drake controllers, you may encounter an issue where
 #### Use with libfranka examples
 - Start the server, then run libfranka examples against host `127.0.0.1`.
 
+### Live compare: real vs sim (single binary)
+
+Run the same libfranka example on both the real robot and the Drake FCI sim and plot joint positions in sync.
+
+One-time setup (publisher endpoint):
+```bash
+mkdir -p ~/.config/franka
+echo 'udp://127.0.0.1:5601' > ~/.config/franka/mon_endpoint
+```
+
+Start the server:
+```bash
+./build/bin/franka-fci-sim-embed-example
+```
+
+Run the example twice (same binary), labeling each stream:
+```bash
+# Real FCI
+libfranka/build/examples/pick_and_place --src=real panda0.robot
+
+# Sim FCI
+libfranka/build/examples/pick_and_place --src=sim 127.0.0.1
+```
+
+Viewer (single-port mode; streams are separated by label):
+```bash
+cd libfranka/build/examples
+python3 ../../examples/plot_compare_real_vs_sim_udp.py \
+  --real-port 5601 --sim-port 5601 \
+  --ms 1.0 --hz 60 \
+  --align-auto --align-joint 5
+```
+
+Tips and options:
+- `--ms`: time grid in milliseconds (1.0 = libfranka step); both streams are interpolated to this grid.
+- `--align-auto`: cross-correlate a joint (default `--align-joint 5`) to auto-estimate and remove lag.
+- `--offset-ms N`: additionally shift the REAL stream by N ms (positive moves real earlier).
+- Robust to staggered starts: the plot updates when any stream begins; missing segments show as gaps.
+- The publisher advances a discrete step index only when arm joints change, so gripper-only motion does not advance time. This keeps traces aligned during grasp/release phases.
+- Endpoint can also be overridden per-binary by placing a file `franka_mon_endpoint` next to the executable containing `udp://host:port`.
+
 #### Repository structure
 - include/franka_drake/ - public headers
 - src/ - implementation (private headers under src/internal/)

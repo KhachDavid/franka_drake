@@ -10,6 +10,17 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <thread>
+#include <atomic>
+#include <sstream>
+
+// Lightweight UDP telemetry server headers
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/select.h>
 
 #include <drake/geometry/scene_graph.h>
 #include <drake/geometry/collision_filter_manager.h>
@@ -98,6 +109,61 @@ SharedRobotState& GetSharedState() {
 
 }  // namespace
 
+// Simple JSON writer for numeric arrays
+static std::string MakeTelemetryJson(double t,
+                                     const std::array<double,7>& q,
+                                     const std::array<double,7>& dq,
+                                     const std::array<double,7>& tau,
+                                     double gripper_width) {
+  std::ostringstream os;
+  os.setf(std::ios::fixed, std::ios::floatfield);
+  os << std::setprecision(6);
+  os << "{\"t\":" << t << ",\"q\":[";
+  for (int i = 0; i < 7; ++i) { if (i) os << ","; os << q[i]; }
+  os << "],\"dq\":[";
+  for (int i = 0; i < 7; ++i) { if (i) os << ","; os << dq[i]; }
+  os << "],\"tau\":[";
+  for (int i = 0; i < 7; ++i) { if (i) os << ","; os << tau[i]; }
+  os << "],\"w\":" << gripper_width << "}";
+  return os.str();
+}
+
+static void TelemetryServerLoop(std::atomic<bool>* running, int port) {
+  int fd = socket(AF_INET, SOCK_DGRAM, 0);
+  if (fd < 0) return;
+  int opt = 1;
+  setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+  sockaddr_in addr{}; addr.sin_family = AF_INET; addr.sin_addr.s_addr = INADDR_ANY; addr.sin_port = htons(port);
+  if (bind(fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
+    close(fd); return;
+  }
+  // Non-blocking with select timeout
+  fcntl(fd, F_SETFL, O_NONBLOCK);
+  auto t0 = std::chrono::steady_clock::now();
+  while (running->load()) {
+    fd_set rfds; FD_ZERO(&rfds); FD_SET(fd, &rfds);
+    timeval tv{}; tv.tv_sec = 0; tv.tv_usec = 10000; // 10 ms
+    int rv = select(fd + 1, &rfds, nullptr, nullptr, &tv);
+    if (rv <= 0) continue;
+    sockaddr_in src{}; socklen_t sl = sizeof(src);
+    char buf[8];
+    ssize_t n = recvfrom(fd, buf, sizeof(buf), 0, (sockaddr*)&src, &sl);
+    if (n < 0) continue;
+    // Snapshot shared state
+    auto& st = GetSharedState();
+    std::array<double,7> q{}, dq{}, tau{};
+    double w = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(st.mutex);
+      q = st.q; dq = st.dq; tau = st.tau_J; w = st.gripper_q[0] + st.gripper_q[1];
+    }
+    double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    std::string json = MakeTelemetryJson(t, q, dq, tau, w);
+    sendto(fd, json.data(), json.size(), 0, (sockaddr*)&src, sl);
+  }
+  close(fd);
+}
+
 // Apply a collision filter that disables robot self-collisions while keeping
 // collisions with the environment enabled. This constructs a GeometrySet of all
 // collision geometries belonging to the given robot model instance and excludes
@@ -147,6 +213,11 @@ struct FciSimEmbedder::Impl {
   // Networking server
   std::unique_ptr<FrankaFciSimServer> server;
   std::unique_ptr<FrankaGripperSimServer> gripper_server;
+
+  // Telemetry side-channel (UDP request/response). Default port 5511.
+  std::atomic<bool> telemetry_running{false};
+  int telemetry_port = 5511;
+  std::thread telemetry_thread;
 
   // Wiring helpers
   std::pair<int, int> DetectEndEffectorConfiguration();
@@ -817,6 +888,16 @@ void FciSimEmbedder::StartServer(uint16_t tcp_port, uint16_t udp_port) {
       [this](){ this->SetGripperWidth(GetSharedState().gripper_max_width); },
       [this](double width, double speed, double force, double eps_out){ (void)eps_out; this->SetGripperWidth(width); /* force could scale gains if needed */ });
   std::thread([srv = impl_->gripper_server.get()](){ srv->run(); }).detach();
+
+  // Start telemetry side-channel on UDP port (non-FCI); request-response: any datagram -> JSON state
+  if (!impl_->telemetry_running.load()) {
+    impl_->telemetry_running = true;
+    int port = impl_->telemetry_port;
+    impl_->telemetry_thread = std::thread([this, port]() {
+      TelemetryServerLoop(&impl_->telemetry_running, port);
+    });
+    impl_->telemetry_thread.detach();
+  }
 }
 
 void FciSimEmbedder::StopServer() {
