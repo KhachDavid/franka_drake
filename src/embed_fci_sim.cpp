@@ -102,6 +102,15 @@ struct SharedRobotState {
   double gripper_left_sign = 1.0;
   double gripper_right_sign = 1.0;
   double gripper_target_width = 0.08;
+  // Finish/hold transition smoothing
+  bool finish_blend_active = false;
+  std::chrono::steady_clock::time_point finish_blend_t0{};
+  double finish_blend_T = 0.25;  // seconds
+  bool reinit_position_hold_filter = false;
+  // IK engagement ramp when entering external Cartesian control
+  bool ik_engage_active = false;
+  std::chrono::steady_clock::time_point ik_engage_t0{};
+  double ik_engage_T = 1.00;  // seconds (slower safe ramp)
 };
 
 SharedRobotState& GetSharedState() {
@@ -377,6 +386,31 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
           arm_velocity_indices_.push_back(vstart_name[i].first);
         }
       }
+
+      // Build mapping from actuation port slots (nu_robot_) to arm joint indices [0..arm_joints_-1].
+      // This ensures controller torques are placed in the same order the plant expects.
+      act_slot_to_arm_index_.assign(nu_robot_, -1);
+      try {
+        struct Entry { int slot; int vstart; std::string joint_name; };
+        std::vector<Entry> entries;
+        entries.reserve(nu_robot_);
+        for (drake::multibody::JointActuatorIndex a(0); a < plant_->num_actuators(); ++a) {
+          const auto& act = plant_->get_joint_actuator(a);
+          if (act.model_instance() != robot_) continue;
+          if (act.joint().num_velocities() != 1) continue;
+          entries.push_back({static_cast<int>(a), act.joint().velocity_start(), act.joint().name()});
+        }
+        std::sort(entries.begin(), entries.end(), [](const Entry& x, const Entry& y){ return x.slot < y.slot; });
+        // For each slot, find matching arm index by velocity index (robust across variants)
+        for (int slot = 0; slot < static_cast<int>(entries.size()) && slot < nu_robot_; ++slot) {
+          int v = entries[slot].vstart;
+          for (int j = 0; j < arm_joints_ && j < static_cast<int>(arm_velocity_indices_.size()); ++j) {
+            if (arm_velocity_indices_[j] == v) { act_slot_to_arm_index_[slot] = j; break; }
+          }
+        }
+      } catch (const std::exception&) {
+        // Leave mapping as -1 on failure; controller will skip those slots.
+      }
     }
     int state_in() const { return state_in_; }
    private:
@@ -424,10 +458,16 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         }
         integral_errors_.setZero();
         velocity_integral_errors_.setZero();
-        // Compose output vector sized to actuation inputs (arm + optional gripper).
+        // Compose output vector sized to actuation inputs (arm + optional gripper)
+        // using the discovered mapping from actuation slot -> arm joint index.
         Eigen::VectorXd tau_out = Eigen::VectorXd::Zero(nu_robot_);
-        for (int i = 0; i < std::min(arm_joints_, nu_robot_); ++i) {
-          tau_out[i] = tau[i];
+        for (int slot = 0; slot < nu_robot_; ++slot) {
+          int arm_idx = (slot >= 0 && slot < static_cast<int>(act_slot_to_arm_index_.size()))
+                            ? act_slot_to_arm_index_[slot]
+                            : -1;
+          if (arm_idx >= 0 && arm_idx < arm_joints_) {
+            tau_out[slot] = tau[arm_idx];
+          }
         }
         // Leave any extra actuators (e.g., gripper) at zero torque during external torque control.
         out->SetFromVector(tau_out);
@@ -445,6 +485,90 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
       }
       // CARTESIAN CONTROL (position or velocity; requires fresh commands)
       else if ((st.has_cartesian_command || st.has_cartesian_velocity_command) && commands_active) {
+        // If controller mode is JointImpedance, synthesize joint-impedance torques using
+        // q_d obtained via resolved-rate IK from the commanded Cartesian pose, matching
+        // libfranka's joint_impedance_control structure (IK -> q_d, then tau = K(q_d-q)-D dq).
+        if (st.current_controller_mode == protocol::Move::ControllerMode::kJointImpedance && st.has_cartesian_command) {
+          // Calculate Jacobian for the EE and extract arm columns
+          const int plant_nv = plant_->num_velocities();
+          Eigen::MatrixXd J_full(6, plant_nv);
+          try {
+            if (!plant_->HasFrameNamed(st.ee_frame_name, robot_)) {
+              tau.setZero();
+              return;
+            }
+            plant_->CalcJacobianSpatialVelocity(*plant_context_, drake::multibody::JacobianWrtVariable::kV,
+                                                plant_->GetFrameByName(st.ee_frame_name, robot_), Eigen::Vector3d::Zero(),
+                                                plant_->world_frame(), plant_->world_frame(), &J_full);
+          } catch (const std::exception&) {
+            tau.setZero();
+            return;
+          }
+          Eigen::MatrixXd J_arm(6, arm_joints_);
+          for (int i = 0; i < arm_joints_ && i < static_cast<int>(arm_velocity_indices_.size()); ++i) {
+            J_arm.col(i) = J_full.col(arm_velocity_indices_[i]);
+          }
+          // Build dq_arm consistent with the Jacobian columns
+          const Eigen::VectorXd v_full = plant_->GetVelocities(*plant_context_);
+          Eigen::VectorXd dq_arm(arm_joints_);
+          for (int i = 0; i < arm_joints_ && i < static_cast<int>(arm_velocity_indices_.size()); ++i) {
+            dq_arm[i] = v_full[arm_velocity_indices_[i]];
+          }
+
+          // Compute desired pose from command
+          Eigen::Matrix4d T_cmd; for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r) T_cmd(r,c) = st.O_T_EE_cmd[c*4 + r];
+          drake::math::RigidTransformd X_W_EE_cmd(T_cmd);
+          const drake::math::RigidTransformd X_W_EE = plant_->CalcRelativeTransform(*plant_context_, plant_->world_frame(), plant_->GetFrameByName(st.ee_frame_name, robot_));
+          // Orientation error as small-angle quaternion vector (sign-corrected)
+          Eigen::Vector3d p_err = X_W_EE_cmd.translation() - X_W_EE.translation();
+          Eigen::Quaterniond q_meas(X_W_EE.rotation().matrix());
+          Eigen::Quaterniond q_des(X_W_EE_cmd.rotation().matrix());
+          if (q_meas.coeffs().dot(q_des.coeffs()) < 0.0) q_des.coeffs() = -q_des.coeffs();
+          Eigen::Quaterniond q_err = q_des * q_meas.conjugate();
+          Eigen::Vector3d o_err(2.0 * q_err.x(), 2.0 * q_err.y(), 2.0 * q_err.z());
+
+          // Resolved-rate IK to update q_d
+          const double lambda2 = 0.03 * 0.03;
+          const double Kp_pos = 8.0;
+          const double Kp_rot = 3.0;
+          Eigen::VectorXd x_err(6); x_err.head<3>() = Kp_pos * p_err; x_err.tail<3>() = Kp_rot * o_err;
+          Eigen::MatrixXd JJt = J_arm * J_arm.transpose();
+          for (int i = 0; i < 6; ++i) JJt(i,i) += lambda2;
+          Eigen::VectorXd dq_task = J_arm.transpose() * JJt.ldlt().solve(x_err);
+          // Nullspace regularization toward previous q_d to keep branch
+          if (!qd_prev_init_) { qd_prev_ = q.head(arm_joints_); qd_prev_init_ = true; }
+          Eigen::MatrixXd I = Eigen::MatrixXd::Identity(arm_joints_, arm_joints_);
+          Eigen::MatrixXd Jsharp = J_arm.transpose() * JJt.ldlt().solve(Eigen::MatrixXd::Identity(6,6));
+          Eigen::MatrixXd N = I - Jsharp * J_arm;
+          Eigen::MatrixXd Kn = Eigen::MatrixXd::Zero(arm_joints_, arm_joints_);
+          for (int i = 0; i < arm_joints_; ++i) Kn(i,i) = (i < 4 ? 0.2 : 0.8);
+          Kn(3,3) += 1.5; Kn(5,5) += 1.5;
+          Eigen::VectorXd dq_null = N * Kn * (qd_prev_ - q.head(arm_joints_));
+          Eigen::VectorXd dq_des = dq_task + dq_null;
+          const double dt = 0.001;
+          const double dq_cap[7] = {0.3,0.3,0.3,0.3,0.15,0.15,0.15};
+          for (int i = 0; i < arm_joints_ && i < 7; ++i) dq_des[i] = std::clamp(dq_des[i], -dq_cap[i], dq_cap[i]);
+          Eigen::VectorXd qd_now = qd_prev_ + dq_des * dt;
+          qd_prev_ = qd_now;
+
+          // Joint impedance torques toward qd_now
+          const double k_gains[7] = {600,600,600,600,250,150,50};
+          const double d_gains[7] = {50,50,50,50,30,25,15};
+          for (int i = 0; i < arm_joints_ && i < 7; ++i) {
+            double e = qd_now[i] - q[i];
+            tau[i] = k_gains[i] * e - d_gains[i] * dq_filtered_internal_[i];
+          }
+        }
+        // Always add external torques from client (if any) on top, with limits and rate limit.
+        if (!st.has_torque_command) {
+          // no external torques supplied; keep current tau
+        } else {
+          for (int i = 0; i < arm_joints_; ++i) {
+            double t_add = st.tau_cmd[i];
+            tau[i] += t_add;
+          }
+        }
+        {
         // Optional throttled debug
         static const bool kDebugCart = false;
         auto log_throttled = [&](const std::string& msg) {
@@ -519,24 +643,44 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         for (int i = 0; i < 3; ++i) F[i] = std::clamp(F[i], -150.0, 150.0);
         for (int i = 3; i < 6; ++i) F[i] = std::clamp(F[i], -10.0, 10.0);
 
-        tau = J_arm.transpose() * F;
+        tau += J_arm.transpose() * F;
+        }
       }
       // POSITION CONTROL / HOLD (keeps holding last q_cmd even after motion finishes)
       else if (st.has_position_command) {
         // Position hold/tracking: add small integral term to kill residual drift
         const double K[7]  = {100,100,100,100,80,60,40};     // stiffness
-        const double D[7]  = {16,16,14,14,12,10,8};          // a bit more damping for payloads
+        double D[7]  = {16,16,14,14,12,10,8};                // a bit more damping for payloads
+        // Extra damping on joints 3 and 5 to quell wrist/elbow jitter
+        D[3] *= 1.5;  // q3
+        D[5] *= 1.5;  // q5
         const double Ki[7] = {0.6,0.6,0.6,0.6,0.4,0.3,0.25}; // gentler integral to avoid chatter
         static const std::array<double, 7> plant_to_franka_sign{1.0,1.0,1.0,1.0,1.0,1.0,1.0};
 
-        // Rate-limited setpoint tracking
-        const double max_rate = 1.0; // rad/s
+        // Rate-limited setpoint tracking with deadband to avoid dithering
+        const double max_rate = 0.6; // rad/s (slower in hold)
+        const double pos_deadband = 0.002; // 2 mrad deadband
         for (int i = 0; i < arm_joints_; ++i) {
           double q_target = plant_to_franka_sign[i] * st.q_cmd[i];
           double q_current = q[i];
           double dq_current = dq_filtered_internal_[i];
 
+          // During finish blend, gently move target toward current position and fade velocity to zero
+          if (st.finish_blend_active) {
+            const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - st.finish_blend_t0).count();
+            double alpha = std::clamp(1.0 - t / st.finish_blend_T, 0.0, 1.0);
+            q_target = alpha * q_target + (1.0 - alpha) * q_current;
+            if (t >= st.finish_blend_T) {
+              st.finish_blend_active = false;
+            }
+          }
+
+          if (st.reinit_position_hold_filter) {
+            q_cmd_filtered_[i] = q_current;
+          }
+
           double q_error_cmd = q_target - q_cmd_filtered_[i];
+          if (std::abs(q_error_cmd) < pos_deadband) q_error_cmd = 0.0;
           double max_step = max_rate * 0.001;
           if (q_error_cmd > max_step) q_cmd_filtered_[i] += max_step;
           else if (q_error_cmd < -max_step) q_cmd_filtered_[i] -= max_step;
@@ -544,17 +688,21 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
 
           // Control with PI-D
           double pos_error = q_cmd_filtered_[i] - q_current;
+          if (std::abs(pos_error) < pos_deadband) pos_error = 0.0;
           // Conditional integral to cancel gravity/payload bias without exciting noise
           // - Leak slowly to avoid stale bias when payload changes
           // - Only integrate when near standstill and not far from the target
           static const double kIntLeak = 0.9995;               // ~1.4 s half-life at 1 kHz
           static const double kVelStill = 0.02;                // rad/s
-          static const double kPosNear = 0.15;                 // rad
+          static const double kPosNear = 0.10;                 // rad
           integral_errors_[i] *= kIntLeak;
           if (std::abs(dq_current) < kVelStill && std::abs(pos_error) < kPosNear) {
             integral_errors_[i] = std::clamp(integral_errors_[i] + pos_error * 0.001, -0.1, 0.1);
           }
           tau[i] = K[i] * pos_error + Ki[i] * integral_errors_[i] - D[i] * dq_current;
+        }
+        if (st.reinit_position_hold_filter) {
+          st.reinit_position_hold_filter = false;
         }
       } else {
         // Idle: zero from controller; g_comp holds posture.
@@ -573,9 +721,14 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         last_tau[i] = t;
       }
 
-      // Compose output vector of size nu_robot_: arm torques + optional gripper torques
+      // Compose output vector of size nu_robot_: map arm torques into actuation order
       Eigen::VectorXd tau_out = Eigen::VectorXd::Zero(nu_robot_);
-      for (int i = 0; i < std::min(arm_joints_, nu_robot_); ++i) tau_out[i] = tau[i];
+      for (int slot = 0; slot < nu_robot_; ++slot) {
+        int arm_idx = (slot >=0 && slot < static_cast<int>(act_slot_to_arm_index_.size())) ? act_slot_to_arm_index_[slot] : -1;
+        if (arm_idx >= 0 && arm_idx < arm_joints_) {
+          tau_out[slot] = tau[arm_idx];
+        }
+      }
 
       if (nu_robot_ > arm_joints_ && st.gripper_registered && st.num_gripper_joints == 2 && gripper_left_q_index_ >= 0 && gripper_right_q_index_ >= 0) {
         // Simple P-D control for prismatic fingers to track desired width.
@@ -621,6 +774,10 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
     mutable std::array<double,7> q_cmd_filtered_{{0,0,0,0,0,0,0}};
     mutable Eigen::VectorXd dq_filtered_internal_;
     std::vector<int> arm_velocity_indices_;
+    std::vector<int> act_slot_to_arm_index_;
+    // For IK-derived q_d persistence in impedance branch
+    mutable Eigen::VectorXd qd_prev_ = Eigen::VectorXd::Zero(7);
+    mutable bool qd_prev_init_ = false;
   };
 
   num_arm_joints_cached = num_arm_joints;
@@ -779,52 +936,92 @@ protocol::RobotState FciSimEmbedder::Impl::MakeRobotStateSnapshot() {
   rs.O_T_EE_c = st.O_T_EE_cmd;
   rs.q_d = st.has_position_command ? st.q_cmd : st.q;
   rs.dq_d.fill(0.0);
-  // Provide q_d for Cartesian motion modes by solving IK toward O_T_EE_cmd.
-  // This mirrors real FCI behavior where q_d reflects the internal IK result with one-step delay.
+  // Provide q_d for Cartesian motion modes using IK that directly solves for joint
+  // positions matching the commanded pose while minimizing deviation from the
+  // previous solution. This avoids drift from velocity integration.
   if (st.has_cartesian_command || st.has_cartesian_velocity_command) {
     try {
-      // Build a context with current joint positions of this robot instance.
+      // Build IK
       auto context = plant->CreateDefaultContext();
-      {
-        Eigen::VectorXd q_inst = Eigen::VectorXd::Zero(plant->num_positions(robot));
-        for (int i = 0; i < std::min(7, static_cast<int>(q_inst.size())); ++i) q_inst[i] = st.q[i];
-        plant->SetPositions(context.get(), robot, q_inst);
-      }
-
-      // Desired pose from st.O_T_EE_cmd
-      Eigen::Matrix4d T_cmd;
-      for (int c = 0; c < 4; ++c) for (int r = 0; r < 4; ++r) T_cmd(r, c) = st.O_T_EE_cmd[c * 4 + r];
+      Eigen::VectorXd q_inst = Eigen::VectorXd::Zero(plant->num_positions(robot));
+      for (int i = 0; i < std::min(7, static_cast<int>(q_inst.size())); ++i) q_inst[i] = st.q[i];
+      plant->SetPositions(context.get(), robot, q_inst);
+      const auto& ee = plant->GetFrameByName(st.ee_frame_name, robot);
+      Eigen::Matrix4d T_cmd; for (int c=0;c<4;++c) for (int r=0;r<4;++r) T_cmd(r,c)=st.O_T_EE_cmd[c*4+r];
       const drake::math::RigidTransformd X_W_EE_cmd(T_cmd);
 
-      // Setup IK: match end-effector pose with gentle tolerances, regularize to current q.
-      const auto& ee = plant->GetFrameByName(st.ee_frame_name, robot);
       drake::multibody::InverseKinematics ik(*plant);
-      const Eigen::Vector3d p_des = X_W_EE_cmd.translation();
-      const drake::math::RotationMatrixd R_des = X_W_EE_cmd.rotation();
-      // Tight but feasible tolerances
-      const Eigen::Vector3d p_tol(0.002, 0.002, 0.002); // 2 mm box
-      ik.AddPositionConstraint(ee, Eigen::Vector3d::Zero(), plant->world_frame(), p_des - p_tol, p_des + p_tol);
-      const double theta_bound = 5.0 * M_PI / 180.0; // 5 deg
-      ik.AddOrientationConstraint(ee, drake::math::RotationMatrixd(), plant->world_frame(), R_des, theta_bound);
-      // Regularize toward a persistent seed (previous solution) for continuity
+      const auto& world = plant->world_frame();
+      const Eigen::Vector3d p_WP = X_W_EE_cmd.translation();
+      const drake::math::RotationMatrixd R_WE(X_W_EE_cmd.rotation());
+      const double pos_tol = 5e-3;    // 5 mm (slightly relaxed for robustness)
+      const double rot_tol = 2.0 * M_PI / 180.0; // 2 deg
+      ik.AddPositionConstraint(ee, Eigen::Vector3d::Zero(), world, p_WP - Eigen::Vector3d::Constant(pos_tol), p_WP + Eigen::Vector3d::Constant(pos_tol));
+      ik.AddOrientationConstraint(ee, drake::math::RotationMatrixd(), world, R_WE, rot_tol);
+
+      // Joint limits (Panda typical)
+      const double q_min_arr[7] = {-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973};
+      const double q_max_arr[7] = { 2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973};
       auto* prog = ik.get_mutable_prog();
-      const auto& qvar = ik.q();
-      Eigen::VectorXd q_all = plant->GetPositions(*context);
-      static Eigen::VectorXd q_seed;
-      static int q_seed_size = -1;
-      if (q_seed_size != q_all.size()) { q_seed = q_all; q_seed_size = q_all.size(); }
-      const double w_reg = 1.0;
-      prog->AddQuadraticCost(w_reg * (qvar - q_seed).transpose() * (qvar - q_seed));
-      prog->SetInitialGuess(qvar, q_seed);
+      const auto& q_vars = ik.q();
+      // Map the 7 arm joint position indices within the plant-wide decision vector.
+      std::array<int,7> pos_idx{};
+      for (int i = 0; i < 7; ++i) {
+        try {
+          const auto& j = plant->GetJointByName<drake::multibody::RevoluteJoint>(std::string("fer_joint") + std::to_string(i + 1), robot);
+          pos_idx[i] = j.position_start();
+        } catch (const std::exception&) {
+          pos_idx[i] = i; // fallback
+        }
+      }
+
+      // Apply bounds to those specific variables and build a selection of them for the cost.
+      drake::solvers::VectorXDecisionVariable arm_vars(7);
+      for (int i = 0; i < 7 && pos_idx[i] < q_vars.size(); ++i) {
+        arm_vars(i) = q_vars(pos_idx[i]);
+        prog->AddBoundingBoxConstraint(q_min_arr[i], q_max_arr[i], q_vars(pos_idx[i]));
+      }
+
+      // Quadratic cost to stay close to previous solution and avoid jumps (arm joints only)
+      static Eigen::VectorXd q_prev = Eigen::VectorXd::Zero(7);
+      static bool q_prev_init = false;
+      if (!q_prev_init) { for (int i=0;i<7;++i) q_prev[i] = st.q[i]; q_prev_init = true; }
+      Eigen::MatrixXd W7 = Eigen::MatrixXd::Identity(7,7);
+      for (int i=0;i<7; ++i) W7(i,i) = (i < 4 ? 4.0 : 8.0); // heavier on distal joints
+      prog->AddQuadraticErrorCost(W7, q_prev, arm_vars);
+
+      // Initial guess: previous solution for arm joints, keep other positions as current.
+      Eigen::VectorXd q_guess = plant->GetPositions(*context);
+      for (int i=0;i<7; ++i) if (pos_idx[i] < q_guess.size()) q_guess[pos_idx[i]] = q_prev[i];
+      prog->SetInitialGuess(q_vars, q_guess);
 
       const auto result = drake::solvers::Solve(*prog);
       if (result.is_success()) {
-        Eigen::VectorXd q_sol = result.GetSolution(qvar);
-        auto context_sol = plant->CreateDefaultContext();
-        plant->SetPositions(context_sol.get(), q_sol);
-        Eigen::VectorXd q_inst = plant->GetPositions(*context_sol, robot);
-        for (int i = 0; i < 7 && i < q_inst.size(); ++i) rs.q_d[i] = q_inst[i];
-        q_seed = q_sol; // persist for next step
+        Eigen::VectorXd q_sol = result.GetSolution(q_vars);
+        // Compute measured dt to rate-limit q_d changes and avoid branch jumps.
+        static auto t_prev_qd = std::chrono::steady_clock::now();
+        auto t_now_qd = std::chrono::steady_clock::now();
+        double dt_qd = std::chrono::duration<double>(t_now_qd - t_prev_qd).count();
+        t_prev_qd = t_now_qd;
+        dt_qd = std::clamp(dt_qd, 0.0005, 0.01); // 0.5..10 ms
+        const double dq_cap[7] = {0.4,0.4,0.4,0.35,0.25,0.20,0.20}; // rad/s caps per joint
+
+        for (int i=0;i<7; ++i) {
+          int idx = pos_idx[i];
+          double qi = (idx < q_sol.size()) ? q_sol[idx] : st.q[i];
+          qi = std::clamp(qi, q_min_arr[i], q_max_arr[i]);
+          // Rate-limit versus previous commanded q to avoid instant branch flips
+          double q_old = q_prev[i];
+          double max_step = dq_cap[i] * dt_qd;
+          double dq = qi - q_old;
+          if (dq >  max_step) qi = q_old + max_step;
+          if (dq < -max_step) qi = q_old - max_step;
+          rs.q_d[i] = qi;
+          q_prev[i] = qi;
+        }
+      } else {
+        // Fallback: hold current q
+        rs.q_d = st.q;
       }
     } catch (const std::exception&) {
       // On failure, keep fallback q_d logic already assigned above.
@@ -866,7 +1063,10 @@ void FciSimEmbedder::Impl::HandleRobotCommand(const protocol::RobotCommand& cmd)
   st.elbow_cmd = cmd.motion.elbow_c;
   st.last_command_time = std::chrono::steady_clock::now();
   // Engage the appropriate controller branch purely based on requested motion/controller modes.
-  st.has_torque_command = (st.current_controller_mode == protocol::Move::ControllerMode::kExternalController);
+  // Only pass-through external torques in ExternalController. In impedance modes, use
+  // the server's impedance/cartesian controller with weighted IK q_d.
+  st.has_torque_command = (
+      st.current_controller_mode == protocol::Move::ControllerMode::kExternalController);
   st.has_position_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kJointPosition);
   st.has_velocity_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kJointVelocity);
   st.has_cartesian_command = (st.current_motion_mode == protocol::Move::MotionGeneratorMode::kCartesianPosition);
@@ -877,6 +1077,17 @@ void FciSimEmbedder::Impl::HandleRobotCommand(const protocol::RobotCommand& cmd)
     st.has_velocity_command = false;
     st.has_cartesian_command = false;
     st.has_cartesian_velocity_command = false;
+    // Snap the position hold target to the current measured joints so the arm holds pose.
+    for (int i = 0; i < 7; ++i) {
+      st.q_cmd[i] = st.q[i];
+    }
+    // Exit torque/external control cleanly: switch to joint position mode for holding.
+    st.current_controller_mode = protocol::Move::ControllerMode::kJointImpedance;
+    st.current_motion_mode = protocol::Move::MotionGeneratorMode::kJointPosition;
+    // Start a short blend window to ramp velocities to zero and avoid spikes.
+    st.finish_blend_active = true;
+    st.finish_blend_t0 = std::chrono::steady_clock::now();
+    st.reinit_position_hold_filter = true;
   }
 }
 
@@ -929,6 +1140,13 @@ void FciSimEmbedder::StartServer(uint16_t tcp_port, uint16_t udp_port) {
     std::lock_guard<std::mutex> lock(st.mutex);
     st.current_controller_mode = c;
     st.current_motion_mode = m;
+    // When entering external controller + Cartesian position, ramp-in IK influence.
+    if (c == protocol::Move::ControllerMode::kExternalController &&
+        (m == protocol::Move::MotionGeneratorMode::kCartesianPosition ||
+         m == protocol::Move::MotionGeneratorMode::kCartesianVelocity)) {
+      st.ik_engage_active = true;
+      st.ik_engage_t0 = std::chrono::steady_clock::now();
+    }
   });
   // Run in background thread
   std::thread([srv = impl_->server.get()](){ srv->run(); }).detach();

@@ -752,43 +752,29 @@ void FrankaFciSimServer::udp_control_loop() {
       
           // Check if motion is finished BEFORE processing command
     if (command.motion.motion_generation_finished) {
-      log_message("[FCI Sim Server] Motion finished - switching to idle");
-      control_mode_active_ = false;
-      first_state_after_move_sent_ = false;  // Reset for next motion
-      
-      // Send final state with idle mode
-      if (state_provider_) {
-          protocol::RobotState final_state = state_provider_();
-          final_state.message_id = message_id_++;
-          final_state.robot_mode = protocol::RobotMode::kIdle;
-          final_state.motion_generator_mode = protocol::MotionGeneratorMode::kIdle;
-          final_state.controller_mode = protocol::ControllerMode::kOther;
-          final_state.control_command_success_rate = 1.0;
-          final_state.errors.fill(false);
-          final_state.reflex_reason.fill(false);
-          
-          sendto(udp_socket_fd_, &final_state, sizeof(final_state), 0,
-                (struct sockaddr*)&udp_client_addr_, sizeof(udp_client_addr_));
+      log_message("[FCI Sim Server] Motion finished - entering hold (no idle state spike)");
+      control_mode_active_ = false;            // Stop reporting Move; internal hold stays active
+      first_state_after_move_sent_ = false;    // Reset for next motion
+
+      // Debounce before acknowledging success to ensure hold has engaged.
+      // We wait a short fixed window.
+      std::this_thread::sleep_for(std::chrono::milliseconds(75));
+      // Do NOT send an immediate Idle RobotState; this avoids a one-cycle control drop.
+      // Instead, acknowledge success on TCP and let the client exit control.
+      if (current_motion_id_.load() > 0) {
+        protocol::CommandHeader final_header(
+          protocol::Command::kMove,
+          current_motion_id_.load(),
+          sizeof(protocol::CommandHeader) + sizeof(protocol::Move::Response)
+        );
+        protocol::Move::Response final_response(protocol::Move::Status::kSuccess);
+        if (write_exact(tcp_client_fd_, &final_header, sizeof(final_header)) &&
+            write_exact(tcp_client_fd_, &final_response, sizeof(final_response))) {
+          log_message("[FCI Sim Server] Sent final Move kSuccess response (no idle packet)");
         }
-        
-        // Send TCP Move success response for the motion completion
-        if (current_motion_id_.load() > 0) {
-          protocol::CommandHeader final_header(
-            protocol::Command::kMove,
-            current_motion_id_.load(),
-            sizeof(protocol::CommandHeader) + sizeof(protocol::Move::Response)
-          );
-          
-          protocol::Move::Response final_response(protocol::Move::Status::kSuccess);
-          
-          if (write_exact(tcp_client_fd_, &final_header, sizeof(final_header)) &&
-              write_exact(tcp_client_fd_, &final_response, sizeof(final_response))) {
-            log_message("[FCI Sim Server] Sent final Move kSuccess response for motion completion");
-          }
-          
-          current_motion_id_ = 0;
-        }
-      } else {
+        current_motion_id_ = 0;
+      }
+    } else {
         // Normal command processing
         if (command_handler_) {
           command_handler_(command);
