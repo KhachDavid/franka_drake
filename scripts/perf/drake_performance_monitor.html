@@ -1,0 +1,89 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Drake Simulation Performance Monitor</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .metric { display: inline-block; margin: 10px; padding: 15px; border-radius: 5px; text-align: center; min-width: 150px; }
+        .rtf { background-color: #e3f2fd; border-left: 4px solid #2196f3; }
+        .physics { background-color: #f3e5f5; border-left: 4px solid #9c27b0; }
+        .freq { background-color: #e8f5e8; border-left: 4px solid #4caf50; }
+        .target { background-color: #fff3e0; border-left: 4px solid #ff9800; }
+        .value { font-size: 24px; font-weight: bold; margin: 5px 0; }
+        .label { font-size: 12px; color: #666; }
+        .status { margin-top: 20px; padding: 10px; border-radius: 5px; }
+        .status.good { background-color: #d4edda; border: 1px solid #c3e6cb; color: #155724; }
+        .status.warning { background-color: #fff3cd; border: 1px solid #ffeaa7; color: #856404; }
+        .status.poor { background-color: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; }
+        .refresh-info { font-size: 12px; color: #999; margin-top: 20px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Drake Simulation Performance Monitor</h1>
+        <div id="metrics">
+            <div class="metric rtf">
+                <div class="label">Real-Time Factor</div>
+                <div class="value" id="rtf">--</div>
+                <div class="label">(target: 1.0x)</div>
+            </div>
+            <div class="metric physics">
+                <div class="label">Avg Physics Time</div>
+                <div class="value" id="physics">--</div>
+                <div class="label">milliseconds</div>
+            </div>
+            <div class="metric freq">
+                <div class="value" id="freq">--</div>
+                <div class="label">Effective Frequency</div>
+            </div>
+            <div class="metric target">
+                <div class="value" id="target">1000</div>
+                <div class="label">Target Frequency (Hz)</div>
+            </div>
+        </div>
+        <div id="status" class="status">
+            <strong>Status:</strong> <span id="status-text">Initializing...</span>
+        </div>
+        <div class="refresh-info">
+            Auto-refreshes every 5 seconds. Last update: <span id="last-update">--</span>
+        </div>
+    </div>
+
+    <script>
+        function updateMetrics() {
+            fetch('./performance.json')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('rtf').textContent = data.rtf.toFixed(3) + 'x';
+                    document.getElementById('physics').textContent = data.physics.toFixed(3);
+                    document.getElementById('freq').textContent = data.freq.toFixed(0);
+                    
+                    const status = document.getElementById('status');
+                    const statusText = document.getElementById('status-text');
+                    
+                    if (data.rtf >= 0.95) {
+                        status.className = 'status good';
+                        statusText.textContent = 'Excellent - Running at or near real-time';
+                    } else if (data.rtf >= 0.8) {
+                        status.className = 'status warning';
+                        statusText.textContent = 'Good - Slightly below real-time but acceptable';
+                    } else {
+                        status.className = 'status poor';
+                        statusText.textContent = 'Poor - Significantly below real-time';
+                    }
+                    
+                    document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+                })
+                .catch(error => {
+                    console.log('Error fetching performance data:', error);
+                });
+        }
+        
+        // Update immediately and then every 1 second
+        updateMetrics();
+        setInterval(updateMetrics, 1000);
+    </script>
+</body>
+</html>

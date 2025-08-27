@@ -5,6 +5,7 @@ Libfranka compatible simulation server for the Franka FCI control box. It allows
 #### Features
 - 1 kHz FCI loop, all control modes (pos/vel/torque, impedance), motion generators
 - Headless/visual and turbo modes
+- Real-time factor monitoring with console and web dashboard
 - Models under `models/` (URDF + meshes)
 
 #### Build
@@ -18,6 +19,16 @@ make -j$(nproc)
 ```bash
 ./build/bin/franka-fci-sim-embed-example
 ```
+
+#### Real-Time Factor Monitoring
+The simulation includes comprehensive performance monitoring:
+
+- **Console output**: Performance metrics displayed every 1 second
+- **Web dashboard**: Open `http://localhost:8080/drake_performance_monitor.html` in your browser
+- **Server**: Run `python3 scripts/perf/performance_monitor_server.py` to serve the dashboard
+- **Turbo mode**: Default mode for faster-than-real-time simulation (5x-25x RTF)
+
+See [docs/real_time_factor_monitoring.md](docs/real_time_factor_monitoring.md) for detailed usage instructions.
 
 #### Use with libfranka examples
 - Start the server, then run libfranka examples against host `127.0.0.1`.

@@ -26,6 +26,22 @@ struct FciSimOptions {
   // Hint for which end-effector frame to prefer if multiple are present.
   // If empty, a sensible default is auto-detected.
   std::string ee_frame_hint;
+
+  // Performance reporter (LeafSystem) options. When enabled, a small
+  // LeafSystem will periodically compute real-time factor (RTF) as
+  // (simulation_time_elapsed / wall_time_elapsed) and emit a JSON file
+  // performance.json suitable for the Meshcat-side dashboard.
+  bool perf_enable = true;
+  // Period for reporting in seconds.
+  double perf_interval_s = 1.0;
+  // Where to write performance.json and the optional HTML dashboard.
+  // If empty, defaults to FRANKA_DRAKE_MONITOR_DIR env var (if set), else
+  // ${FRANKA_DRAKE_SOURCE_DIR}/scripts/perf when compiled in-tree, else "./".
+  std::string perf_output_dir;
+  // Nominal simulation step (seconds) used to convert RTF into an effective
+  // frequency and an estimated per-step physics time when a fixed-step loop
+  // is used (default 1kHz).
+  double perf_nominal_dt = 0.001;
 };
 
 // Handle class that encapsulates all wiring/state required to expose a Drake

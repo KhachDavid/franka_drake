@@ -43,6 +43,8 @@
 #include <cstdlib>
 #include <fmt/format.h>
 #include <filesystem>
+#include <fstream>
+#include <cstdlib>
 
 #include "franka_drake/fci_sim_server.h"
 #include "franka_drake/gripper_sim_server.h"
@@ -210,6 +212,9 @@ struct FciSimEmbedder::Impl {
   const drake::multibody::ModelInstanceIndex robot;
   drake::systems::DiagramBuilder<double>* builder;
   FciSimOptions options;
+
+  // Optional performance reporter system pointer (added when enabled)
+  drake::systems::LeafSystem<double>* perf_reporter = nullptr;
 
   // Systems created during ConfigureSystems()
   drake::systems::controllers::InverseDynamics<double>* g_comp = nullptr;
@@ -939,6 +944,86 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
 
   auto* mirror = builder->AddSystem<StateMirror>(plant, robot, num_total_joints, gripper_left_q_index, gripper_right_q_index);
   builder->Connect(plant->get_state_output_port(robot), mirror->get_input_port(0));
+
+  // Performance reporter: small LeafSystem that periodically computes RTF and
+  // writes a JSON file for the web dashboard. Enabled via options.
+  if (options.perf_enable) {
+    class PerfReporter final : public drake::systems::LeafSystem<double> {
+     public:
+      explicit PerfReporter(const FciSimOptions& opts) {
+        interval_s_ = std::max(0.05, opts.perf_interval_s);
+        nominal_dt_ = (opts.perf_nominal_dt > 0.0 ? opts.perf_nominal_dt : 0.001);
+        output_dir_ = ResolveOutputDir(opts);
+        std::error_code ec;
+        std::filesystem::create_directories(output_dir_, ec);
+        this->DeclarePeriodicPublishEvent(interval_s_, 0.0, &PerfReporter::DoPublish);
+      }
+     private:
+      static std::string ResolveOutputDir(const FciSimOptions& opts) {
+        if (!opts.perf_output_dir.empty()) return opts.perf_output_dir;
+        if (const char* env = std::getenv("FRANKA_DRAKE_MONITOR_DIR")) {
+          if (std::strlen(env) > 0) return std::string(env);
+        }
+#ifdef FRANKA_DRAKE_SOURCE_DIR
+        return std::string(FRANKA_DRAKE_SOURCE_DIR) + "/scripts/perf";
+#else
+        return std::string(".");
+#endif
+      }
+      drake::systems::EventStatus DoPublish(const drake::systems::Context<double>& ctx) const {
+        const double t_sim = ctx.get_time();
+        const auto now = std::chrono::steady_clock::now();
+
+        // Initialize baselines on first publish
+        if (!t0_set_) {
+          t0_set_ = true;
+          t0_sim_ = last_sim_ = t_sim;
+          t0_wall_ = last_wall_ = now;
+          return drake::systems::EventStatus::Succeeded();
+        }
+
+        // Instantaneous/window RTF over the last period
+        const double d_sim = t_sim - last_sim_;
+        const double d_wall = std::chrono::duration<double>(now - last_wall_).count();
+        const double rtf_inst = (d_wall > 0.0 ? d_sim / d_wall : 0.0);
+
+        // Running average since start (optional, included for reference)
+        const double sim_elapsed = t_sim - t0_sim_;
+        const double wall_elapsed = std::chrono::duration<double>(now - t0_wall_).count();
+        const double rtf_avg = (wall_elapsed > 0.0 ? sim_elapsed / wall_elapsed : 0.0);
+
+        // Derive instantaneous physics time and frequency from nominal step
+        const double physics_ms = 1000.0 * (nominal_dt_ / std::max(rtf_inst, 1e-9));
+        const double freq_hz = (physics_ms > 0.0) ? (1000.0 / physics_ms) : 0.0;
+
+        const std::string json_path = output_dir_ + "/performance.json";
+        std::ofstream os(json_path);
+        if (os.good()) {
+          os.setf(std::ios::fixed, std::ios::floatfield);
+          os << "{\"rtf\":" << rtf_inst
+             << ",\"rtf_avg\":" << rtf_avg
+             << ",\"physics\":" << physics_ms
+             << ",\"freq\":" << freq_hz
+             << ",\"timestamp\":" << std::chrono::duration<double>(now.time_since_epoch()).count()
+             << "}";
+        }
+
+        // Update last-sample markers
+        last_sim_ = t_sim;
+        last_wall_ = now;
+        return drake::systems::EventStatus::Succeeded();
+      }
+      mutable bool t0_set_ {false};
+      mutable double t0_sim_ {0.0};
+      mutable double last_sim_ {0.0};
+      mutable std::chrono::steady_clock::time_point t0_wall_ {};
+      mutable std::chrono::steady_clock::time_point last_wall_ {};
+      double interval_s_ {1.0};
+      double nominal_dt_ {0.001};
+      std::string output_dir_;
+    };
+    perf_reporter = builder->AddSystem<PerfReporter>(options);
+  }
 }
 
 protocol::RobotState FciSimEmbedder::Impl::MakeRobotStateSnapshot() {

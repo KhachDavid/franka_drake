@@ -11,10 +11,14 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <iomanip>
 
 #include "franka_drake/fci_sim_embed.h"
 
 using drake::multibody::AddMultibodyPlantSceneGraph;
+
+// No HTML/server handling here; monitoring is handled by the embedded
+// LeafSystem reporter added by FciSimEmbedder.
 
 int main() {
   const double dt = 0.001; // 1 kHz
@@ -39,7 +43,7 @@ int main() {
   auto_opts.disable_collisions = true;
   franka_fci_sim::FciSimOptions opts;
   opts.headless = false;
-  opts.turbo = false;
+  opts.turbo = true;  // Enable turbo mode for faster-than-real-time simulation
   auto embed = franka_fci_sim::FciSimEmbedder::AutoAttach(&plant, &scene_graph, &builder, auto_opts, opts);
 
   // Register the gripper and set an initial opening width
@@ -73,12 +77,11 @@ int main() {
   // Robot TCP remains 1337; robot UDP is moved to 1340; gripper uses its own port (1338) separately.
   embed->StartServer(1337, 1340);
 
-  std::cout << "Pick and place scene example running. Meshcat: http://localhost:7000\n";
-  std::cout << "Franka FCI robot at 127.0.0.1:1337 (TCP), UDP 1340; gripper at 1338\n";
-
   for (;;) {
     simulator.AdvanceTo(simulator.get_context().get_time() + dt);
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    if (!opts.turbo) {
+      std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
   }
 
   return 0;

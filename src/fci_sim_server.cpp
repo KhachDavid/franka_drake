@@ -748,7 +748,6 @@ void FrankaFciSimServer::udp_control_loop() {
       char success_msg[256];
       sprintf(success_msg, "[FCI Sim Server] *** RECEIVED UDP COMMAND *** from %s:%d, msg_id=%lu", 
               inet_ntoa(from_addr.sin_addr), ntohs(from_addr.sin_port), command.message_id);
-      log_message(success_msg);
       
           // Check if motion is finished BEFORE processing command
     if (command.motion.motion_generation_finished) {
