@@ -111,6 +111,8 @@ struct SharedRobotState {
   bool ik_engage_active = false;
   std::chrono::steady_clock::time_point ik_engage_t0{};
   double ik_engage_T = 1.00;  // seconds (slower safe ramp)
+  // Force perpetual joint-space hold until a new command arrives
+  bool force_hold = false;
 };
 
 SharedRobotState& GetSharedState() {
@@ -447,8 +449,56 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
 
       const bool commands_active = (std::chrono::duration<double>(std::chrono::steady_clock::now() - st.last_command_time).count() < 0.1);
 
+      // Finish latch window: for a brief window after finish, force joint-space
+      // impedance hold (no Cartesian/velocity/torque paths). This prevents any
+      // residual command from pulling the arm toward a nullspace pose.
+      if (st.finish_blend_active) {
+        const double t_blend = std::chrono::duration<double>(std::chrono::steady_clock::now() - st.finish_blend_t0).count();
+        if (t_blend < 0.30) {
+          const double K[7]  = {600.0,600.0,600.0,600.0,250.0,150.0,50.0};
+          double D[7]  = {50.0,50.0,50.0,50.0,30.0,25.0,15.0};
+          const double Ki[7] = {0.6,0.6,0.6,0.6,0.4,0.3,0.25};
+          const double pos_deadband = 0.002;
+          const double max_rate = 0.6; // rad/s
+          static const double kIntLeak = 0.9995;
+          static const double kVelStill = 0.02;
+          static const double kPosNear = 0.10;
+          // Reset integrator on first entry
+          if (st.reinit_position_hold_filter) {
+            integral_errors_.setZero();
+          }
+          for (int i = 0; i < arm_joints_ && i < 7; ++i) {
+            double q_target = st.q_cmd[i];
+            double q_current = q[i];
+            double dq_current = dq_filtered_internal_[i];
+            double q_error_cmd = q_target - q_cmd_filtered_[i];
+            if (std::abs(q_error_cmd) < pos_deadband) q_error_cmd = 0.0;
+            double max_step = max_rate * 0.001;
+            if (q_error_cmd > max_step) q_cmd_filtered_[i] += max_step;
+            else if (q_error_cmd < -max_step) q_cmd_filtered_[i] -= max_step;
+            else q_cmd_filtered_[i] = q_target;
+            double pos_error = q_cmd_filtered_[i] - q_current;
+            if (std::abs(pos_error) < pos_deadband) pos_error = 0.0;
+            integral_errors_[i] *= kIntLeak;
+            if (std::abs(dq_current) < kVelStill && std::abs(pos_error) < kPosNear) {
+              integral_errors_[i] = std::clamp(integral_errors_[i] + pos_error * 0.001, -0.1, 0.1);
+            }
+            tau[i] = K[i] * pos_error + Ki[i] * integral_errors_[i] - D[i] * dq_current;
+          }
+          st.reinit_position_hold_filter = false;
+          // Map to actuation order and return
+          Eigen::VectorXd tau_out = Eigen::VectorXd::Zero(nu_robot_);
+          for (int slot = 0; slot < nu_robot_; ++slot) {
+            int arm_idx = (slot >=0 && slot < static_cast<int>(act_slot_to_arm_index_.size())) ? act_slot_to_arm_index_[slot] : -1;
+            if (arm_idx >= 0 && arm_idx < arm_joints_) tau_out[slot] = tau[arm_idx];
+          }
+          out->SetFromVector(tau_out);
+          return;
+        }
+      }
+
       // TORQUE CONTROL: pass-through minus gravity (matches app high limits, no rate limit)
-      if (st.has_torque_command) {
+      if (st.has_torque_command && !st.force_hold) {
         // External torque control: pass user torques only; gravity is added by g_comp path.
         static const std::array<double, 7> high_limits{87.0,87.0,87.0,87.0,50.0,50.0,40.0};
         for (int i = 0; i < arm_joints_; ++i) {
@@ -474,7 +524,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         return;
       }
       // VELOCITY CONTROL (requires fresh commands)
-      else if (st.has_velocity_command && commands_active) {
+      else if (st.has_velocity_command && commands_active && !st.force_hold) {
         const double Kp[7] = {40,40,40,40,26,22,18};
         const double Ki[7] = {4,4,4,4,2.6,2.2,1.8};
         for (int i = 0; i < arm_joints_; ++i) {
@@ -484,7 +534,7 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         }
       }
       // CARTESIAN CONTROL (position or velocity; requires fresh commands)
-      else if ((st.has_cartesian_command || st.has_cartesian_velocity_command) && commands_active) {
+      else if ((st.has_cartesian_command || st.has_cartesian_velocity_command) && commands_active && !st.force_hold) {
         // If controller mode is JointImpedance with a Cartesian pose stream,
         // prefer JOINT-SPACE impedance to the IK-generated target in st.q_cmd.
         if (st.current_controller_mode == protocol::Move::ControllerMode::kJointImpedance && st.has_cartesian_command) {
@@ -622,6 +672,11 @@ void FciSimEmbedder::Impl::ConfigureControllerSystems(int num_arm_joints, int nu
         // Rate-limited setpoint tracking with deadband to avoid dithering
         const double max_rate = 0.6; // rad/s (slower in hold)
         const double pos_deadband = 0.002; // 2 mrad deadband
+        // If we're reinitializing the hold filter (on finish or stale), clear
+        // integrators to prevent a residual torque kick.
+        if (st.reinit_position_hold_filter) {
+          integral_errors_.setZero();
+        }
         for (int i = 0; i < arm_joints_; ++i) {
           double q_target = plant_to_franka_sign[i] * st.q_cmd[i];
           double q_current = q[i];
@@ -897,6 +952,9 @@ protocol::RobotState FciSimEmbedder::Impl::MakeRobotStateSnapshot() {
         std::chrono::steady_clock::now() - st.last_command_time).count();
     // Treat anything older than 150 ms as stale (covers minor hiccups).
     if (stale_sec > 0.150) {
+      // Disable any lingering external torque pass-through.
+      st.has_torque_command = false;
+      for (int i = 0; i < 7; ++i) st.tau_cmd[i] = 0.0;
       // Switch to position hold using the latest measured joints as target.
       st.has_position_command = true;
       st.has_velocity_command = false;
@@ -1073,6 +1131,9 @@ void FciSimEmbedder::Impl::HandleRobotCommand(const protocol::RobotCommand& cmd)
     st.has_velocity_command = false;
     st.has_cartesian_command = false;
     st.has_cartesian_velocity_command = false;
+    // Stop any external torque pass-through immediately.
+    st.has_torque_command = false;
+    for (int i = 0; i < 7; ++i) st.tau_cmd[i] = 0.0;
     // Snap the position hold target to the current measured joints so the arm holds pose.
     for (int i = 0; i < 7; ++i) {
       st.q_cmd[i] = st.q[i];
@@ -1084,6 +1145,8 @@ void FciSimEmbedder::Impl::HandleRobotCommand(const protocol::RobotCommand& cmd)
     st.finish_blend_active = true;
     st.finish_blend_t0 = std::chrono::steady_clock::now();
     st.reinit_position_hold_filter = true;
+    // Latch hold until a new Move is requested.
+    st.force_hold = true;
   }
 }
 
@@ -1136,6 +1199,8 @@ void FciSimEmbedder::StartServer(uint16_t tcp_port, uint16_t udp_port) {
     std::lock_guard<std::mutex> lock(st.mutex);
     st.current_controller_mode = c;
     st.current_motion_mode = m;
+    // Clear forced hold when a new Move starts.
+    st.force_hold = false;
     // When entering external controller + Cartesian position, ramp-in IK influence.
     if (c == protocol::Move::ControllerMode::kExternalController &&
         (m == protocol::Move::MotionGeneratorMode::kCartesianPosition ||
