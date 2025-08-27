@@ -19,6 +19,9 @@ make -j$(nproc)
 ./build/bin/franka-fci-sim-embed-example
 ```
 
+#### Use with libfranka examples
+- Start the server, then run libfranka examples against host `127.0.0.1`.
+
 #### Run with Moveit
 
 Once the server is running, you can use Moveit to plan and execute motions.
@@ -30,13 +33,6 @@ ros2 launch franka_gripper gripper.launch.py arm_id:=fer robot_ip:=127.0.0.1 use
 ```bash
 ros2 launch franka_fer_moveit_config moveit.launch.py robot_ip:=127.0.0.1 use_fake_hardware:=false hand:=true launch_gripper_node:=false
 ```
-
-### Known issues
-
-When integrating into custom Drake controllers, you may encounter an issue where the gripper is not working as expected. This is because the Franka has an overly conservative collision filter that prevents the gripper from closing. In pick_and_place_drake_controller.cpp, we apply a collision filter to exclude the gripper from colliding with the boxes. This is a workaround but seems to be the only way to get the gripper to work without completely disabling collision detection.
-
-#### Use with libfranka examples
-- Start the server, then run libfranka examples against host `127.0.0.1`.
 
 ### Live compare: real vs sim (single binary)
 
