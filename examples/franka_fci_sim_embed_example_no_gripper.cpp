@@ -48,19 +48,6 @@ int main() {
   drake::geometry::MeshcatParams params;
   params.host = "0.0.0.0";      // listen on all interfaces
   params.port = std::nullopt;   // keep previous behavior; set a port if you want a fixed one
-  auto meshcat = std::make_shared<drake::geometry::Meshcat>(params);
-  drake::visualization::AddDefaultVisualization(&builder, meshcat);
-
-  // Build and simulate
-  auto diagram = builder.Build();
-  drake::systems::Simulator<double> simulator(*diagram);
-  simulator.set_target_realtime_rate(opts.turbo ? 0.0 : 1.0);
-
-  auto& root = simulator.get_mutable_context();
-  auto& plant_ctx = plant.GetMyMutableContextFromRoot(&root);
-  franka_fci_sim::SetDefaultFrankaInitialState(plant, plant_ctx);
-
-  simulator.Initialize();
   
   // Configure ports based on environment or use defaults
   const char* tcp_port_env = std::getenv("FRANKA_TCP_PORT");
@@ -74,9 +61,21 @@ int main() {
   // Update Meshcat port if environment variable is set
   if (meshcat_port_env) {
     params.port = meshcat_port;
-    meshcat = std::make_shared<drake::geometry::Meshcat>(params);
-    drake::visualization::AddDefaultVisualization(&builder, meshcat);
   }
+  
+  auto meshcat = std::make_shared<drake::geometry::Meshcat>(params);
+  drake::visualization::AddDefaultVisualization(&builder, meshcat);
+
+  // Build and simulate
+  auto diagram = builder.Build();
+  drake::systems::Simulator<double> simulator(*diagram);
+  simulator.set_target_realtime_rate(opts.turbo ? 0.0 : 1.0);
+
+  auto& root = simulator.get_mutable_context();
+  auto& plant_ctx = plant.GetMyMutableContextFromRoot(&root);
+  franka_fci_sim::SetDefaultFrankaInitialState(plant, plant_ctx);
+
+  simulator.Initialize();
   
   // Use configured ports for FCI server
   embed->StartServer(tcp_port, udp_port);
