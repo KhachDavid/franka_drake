@@ -45,7 +45,10 @@ int main() {
   // Note: No gripper registration needed for fingerless configuration
 
   // Meshcat visualization
-  auto meshcat = std::make_shared<drake::geometry::Meshcat>();
+  drake::geometry::MeshcatParams params;
+  params.host = "0.0.0.0";      // listen on all interfaces
+  params.port = std::nullopt;   // keep previous behavior; set a port if you want a fixed one
+  auto meshcat = std::make_shared<drake::geometry::Meshcat>(params);
   drake::visualization::AddDefaultVisualization(&builder, meshcat);
 
   // Build and simulate
@@ -62,7 +65,7 @@ int main() {
   // Robot TCP remains 1337; robot UDP is moved to 1340; gripper uses its own port (1338) separately.
   embed->StartServer(1337, 1340);
 
-  std::cout << "Pick and place scene example (fingerless) running. Meshcat: http://localhost:7000\n";
+  std::cout << "Pick and place scene example (fingerless) running. Meshcat: http://0.0.0.0:7000 (network accessible)\n";
   std::cout << "Franka FCI server at 127.0.0.1:1337 (TCP), UDP 1340; gripper at 1338\n";
   std::cout << "This example uses the fingerless robot configuration (no gripper)\n";
 

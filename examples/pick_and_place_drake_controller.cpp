@@ -84,7 +84,10 @@ int main() {
   // Meshcat visualization (headless-aware)
   std::shared_ptr<drake::geometry::Meshcat> meshcat;
   if (!opts.headless) {
-    meshcat = std::make_shared<drake::geometry::Meshcat>();
+    drake::geometry::MeshcatParams params;
+    params.host = "0.0.0.0";      // listen on all interfaces
+    params.port = std::nullopt;   // keep previous behavior; set a port if you want a fixed one
+    meshcat = std::make_shared<drake::geometry::Meshcat>(params);
     drake::visualization::AddDefaultVisualization(&builder, meshcat);
   }
 

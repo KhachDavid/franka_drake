@@ -6,7 +6,7 @@ The Drake simulation now includes comprehensive real-time factor monitoring that
 
 - **Console Output**: Real-time performance metrics displayed in the terminal
 - **Web Dashboard**: Beautiful HTML interface showing performance data
-- **Auto-refresh**: Metrics update every 5 seconds
+- **Auto-refresh**: Metrics update every 1 seconds
 - **Performance Status**: Color-coded status indicators (Excellent/Good/Poor)
 
 ## Metrics Displayed

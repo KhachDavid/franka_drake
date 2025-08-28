@@ -30,6 +30,14 @@ The simulation includes comprehensive performance monitoring:
 
 See [docs/real_time_factor_monitoring.md](docs/real_time_factor_monitoring.md) for detailed usage instructions.
 
+#### Network Visualization
+The Meshcat visualization is configured to be accessible across your network:
+
+- **Local access**: `http://localhost:7000`
+- **Network access**: `http://YOUR_MACHINE_IP:7000`
+
+This allows remote monitoring and collaboration from other machines on your network. See [docs/network_visualization.md](docs/network_visualization.md) for configuration details and security considerations.
+
 #### Use with libfranka examples
 - Start the server, then run libfranka examples against host `127.0.0.1`.
 

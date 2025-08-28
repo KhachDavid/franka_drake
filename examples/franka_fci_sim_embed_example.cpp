@@ -60,7 +60,10 @@ int main() {
   embed->SetGripperWidth(0.005);
 
   // Meshcat visualization
-  auto meshcat = std::make_shared<drake::geometry::Meshcat>();
+  drake::geometry::MeshcatParams params;
+  params.host = "0.0.0.0";      // listen on all interfaces
+  params.port = std::nullopt;   // keep previous behavior; set a port if you want a fixed one
+  auto meshcat = std::make_shared<drake::geometry::Meshcat>(params);
   drake::visualization::AddDefaultVisualization(&builder, meshcat);
 
   // Build and simulate
