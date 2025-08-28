@@ -61,12 +61,28 @@ int main() {
   franka_fci_sim::SetDefaultFrankaInitialState(plant, plant_ctx);
 
   simulator.Initialize();
-  // Use a non-default UDP port for the robot to avoid any conflict with the gripper UDP port.
-  // Robot TCP remains 1337; robot UDP is moved to 1340; gripper uses its own port (1338) separately.
-  embed->StartServer(1337, 1340);
-
-  std::cout << "Pick and place scene example (fingerless) running. Meshcat: http://0.0.0.0:7000 (network accessible)\n";
-  std::cout << "Franka FCI server at 127.0.0.1:1337 (TCP), UDP 1340; gripper at 1338\n";
+  
+  // Configure ports based on environment or use defaults
+  const char* tcp_port_env = std::getenv("FRANKA_TCP_PORT");
+  const char* udp_port_env = std::getenv("FRANKA_UDP_PORT");
+  const char* meshcat_port_env = std::getenv("MESHCAT_PORT");
+  
+  uint16_t tcp_port = tcp_port_env ? std::stoi(tcp_port_env) : 1337;
+  uint16_t udp_port = udp_port_env ? std::stoi(udp_port_env) : 1340;
+  uint16_t meshcat_port = meshcat_port_env ? std::stoi(meshcat_port_env) : 7000;
+  
+  // Update Meshcat port if environment variable is set
+  if (meshcat_port_env) {
+    params.port = meshcat_port;
+    meshcat = std::make_shared<drake::geometry::Meshcat>(params);
+    drake::visualization::AddDefaultVisualization(&builder, meshcat);
+  }
+  
+  // Use configured ports for FCI server
+  embed->StartServer(tcp_port, udp_port);
+  
+  std::cout << "Franka FCI server running on TCP " << tcp_port << ", UDP " << udp_port << std::endl;
+  std::cout << "Meshcat available at http://localhost:" << meshcat_port << std::endl;
   std::cout << "This example uses the fingerless robot configuration (no gripper)\n";
 
   for (;;) {

@@ -118,7 +118,7 @@ struct SharedRobotState {
 };
 
 SharedRobotState& GetSharedState() {
-  static SharedRobotState* state = new SharedRobotState();
+  static std::unique_ptr<SharedRobotState> state = std::make_unique<SharedRobotState>();
   return *state;
 }
 
@@ -1265,7 +1265,7 @@ FciSimEmbedder::FciSimEmbedder(const drake::multibody::MultibodyPlant<double>* p
                                const drake::multibody::ModelInstanceIndex& robot_instance,
                                drake::systems::DiagramBuilder<double>* builder,
                                const FciSimOptions& options)
-    : impl_(new Impl(plant, robot_instance, builder, options)) {}
+    : impl_(std::make_unique<Impl>(plant, robot_instance, builder, options)) {}
 
 FciSimEmbedder::~FciSimEmbedder() = default;
 

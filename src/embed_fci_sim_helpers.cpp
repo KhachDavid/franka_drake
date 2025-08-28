@@ -96,7 +96,16 @@ EmbeddedApp BuildEmbeddedApp(const BuildArgs& args) {
   plant.SetVelocities(&plant_ctx, robot, v_des);
 
   simulator->Initialize();
-  embed->StartServer(1337, 1338);
+  
+  // Configure ports based on environment or use defaults
+  const char* tcp_port_env = std::getenv("FRANKA_TCP_PORT");
+  const char* udp_port_env = std::getenv("FRANKA_UDP_PORT");
+  
+  uint16_t tcp_port = tcp_port_env ? std::stoi(tcp_port_env) : 1337;
+  uint16_t udp_port = udp_port_env ? std::stoi(udp_port_env) : 1338;
+  
+  // Use configured ports for FCI server
+  embed->StartServer(tcp_port, udp_port);
 
   EmbeddedApp app;
   app.diagram = std::move(diagram);
