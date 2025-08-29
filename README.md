@@ -13,11 +13,13 @@ Libfranka compatible simulation server for the Franka FCI control box. It allows
 docker build --pull --no-cache -t franka:jazzy .
 
 # You can skip what comes after if you are running via docker
+```
+
+```bash
 # If running on a server with no RT Kernel, you won't be able to run docker
 # Therefore, the best way is to build drake in your server and run the example
 # Then, libfranka can be used from any computer with RT Kernel and you will be able to pass your simulation server's ip address. This would work depite your sim server not having RT Kernel. There is a bottleneck in the network, at the moment, the best way to run the simulation is to run it on the same machine as the real robot.
 
-```bash
 #It is recommended to install drake by using the Dockerfile in the base of this repository
 docker build --pull --no-cache -t franka:jazzy .
 cid=$(docker create drake:jammy)
