@@ -39,4 +39,4 @@ Thumbs.db
 __pycache__/
 libfranka/
 *png
-scripts/perf/performance.json
+performance.json
