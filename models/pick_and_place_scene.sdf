@@ -62,7 +62,6 @@
       </link>
     </model>
 
-    <!-- Boxes to pick - smaller and closer to robot -->
     <model name="box_red">
       <pose>0.41 -0.15 0.08 0 0 0</pose>
       <link name="box_link">

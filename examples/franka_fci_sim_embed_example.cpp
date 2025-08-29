@@ -12,6 +12,8 @@
 #include <thread>
 #include <chrono>
 #include <iomanip>
+#include <optional>
+#include <string>
 
 #include "franka_drake/fci_sim_embed.h"
 
@@ -46,17 +48,8 @@ int main() {
   opts.turbo = true;  // Enable turbo mode for faster-than-real-time simulation
   auto embed = franka_fci_sim::FciSimEmbedder::AutoAttach(&plant, &scene_graph, &builder, auto_opts, opts);
 
-  // Register the gripper and set an initial opening width
-  franka_fci_sim::FciSimEmbedder::GripperSpec gripper_spec;
-  gripper_spec.left_joint_name = "fer_finger_joint1";
-  gripper_spec.right_joint_name = "fer_finger_joint2";
-  gripper_spec.min_width_m = 0.0;
-  gripper_spec.max_width_m = 0.08;
-  gripper_spec.kp = 200.0;
-  gripper_spec.kd = 5.0;
-  gripper_spec.left_sign = +1.0;
-  gripper_spec.right_sign = -1.0;  // Right finger prismatic axis is -Y
-  embed->RegisterGripper(gripper_spec);
+  // Register the gripper with default values - only need to specify prefer_gripper = true above
+  embed->RegisterGripper({});
   embed->SetGripperWidth(0.005);
 
   // Meshcat visualization
@@ -65,13 +58,13 @@ int main() {
   params.port = std::nullopt;   // keep previous behavior; set a port if you want a fixed one
   
   // Configure ports based on environment or use defaults
-  const char* tcp_port_env = std::getenv("FRANKA_TCP_PORT");
-  const char* udp_port_env = std::getenv("FRANKA_UDP_PORT");
-  const char* meshcat_port_env = std::getenv("MESHCAT_PORT");
+  const std::optional<std::string> tcp_port_env = std::getenv("FRANKA_TCP_PORT") ? std::optional<std::string>(std::getenv("FRANKA_TCP_PORT")) : std::nullopt;
+  const std::optional<std::string> udp_port_env = std::getenv("FRANKA_UDP_PORT") ? std::optional<std::string>(std::getenv("FRANKA_UDP_PORT")) : std::nullopt;
+  const std::optional<std::string> meshcat_port_env = std::getenv("MESHCAT_PORT") ? std::optional<std::string>(std::getenv("MESHCAT_PORT")) : std::nullopt;
   
-  uint16_t tcp_port = tcp_port_env ? std::stoi(tcp_port_env) : 1337;
-  uint16_t udp_port = udp_port_env ? std::stoi(udp_port_env) : 1340;
-  uint16_t meshcat_port = meshcat_port_env ? std::stoi(meshcat_port_env) : 7000;
+  uint16_t tcp_port = tcp_port_env ? std::stoi(tcp_port_env.value()) : 1337;
+  uint16_t udp_port = udp_port_env ? std::stoi(udp_port_env.value()) : 1340;
+  uint16_t meshcat_port = meshcat_port_env ? std::stoi(meshcat_port_env.value()) : 7000;
   
   // Update Meshcat port if environment variable is set
   if (meshcat_port_env) {

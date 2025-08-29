@@ -60,8 +60,7 @@
     <child link="fer_link1"/>
     <axis xyz="0 0 1"/>
     <limit effort="87.0" lower="-2.8973" upper="2.8973" velocity="2.175"/>
-    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973"/>
-    <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
+    <dynamics D="1" K="7000" damping="0.003" mu_coulomb="0" mu_viscous="16"/>
   </joint>
   <!-- sub-link defining detailed meshes for collision with environment -->
   <link name="fer_link2">
@@ -87,8 +86,7 @@
     <child link="fer_link2"/>
     <axis xyz="0 0 1"/>
     <limit effort="87.0" lower="-1.7628" upper="1.7628" velocity="2.175"/>
-    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-1.7628" soft_upper_limit="1.7628"/>
-    <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
+    <dynamics D="1" K="7000" damping="0.003" mu_coulomb="0" mu_viscous="16"/>
   </joint>
   <!-- sub-link defining detailed meshes for collision with environment -->
   <link name="fer_link3">
@@ -114,8 +112,7 @@
     <child link="fer_link3"/>
     <axis xyz="0 0 1"/>
     <limit effort="87.0" lower="-2.8973" upper="2.8973" velocity="2.175"/>
-    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973"/>
-    <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
+    <dynamics D="1" K="7000" damping="0.003" mu_coulomb="0" mu_viscous="16"/>
   </joint>
   <!-- sub-link defining detailed meshes for collision with environment -->
   <link name="fer_link4">
@@ -141,8 +138,7 @@
     <child link="fer_link4"/>
     <axis xyz="0 0 1"/>
     <limit effort="87.0" lower="-3.0718" upper="-0.0698" velocity="2.175"/>
-    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-3.0718" soft_upper_limit="-0.0698"/>
-    <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
+    <dynamics D="1" K="7000" damping="0.003" mu_coulomb="0" mu_viscous="16"/>
   </joint>
   <!-- sub-link defining detailed meshes for collision with environment -->
   <link name="fer_link5">
@@ -168,8 +164,7 @@
     <child link="fer_link5"/>
     <axis xyz="0 0 1"/>
     <limit effort="25.0" lower="-2.8973" upper="2.8973" velocity="2.61"/>
-    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973"/>
-    <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
+    <dynamics D="1" K="7000" damping="0.003" mu_coulomb="0" mu_viscous="16"/>
   </joint>
   <!-- sub-link defining detailed meshes for collision with environment -->
   <link name="fer_link6">
@@ -195,8 +190,7 @@
     <child link="fer_link6"/>
     <axis xyz="0 0 1"/>
     <limit effort="25.0" lower="-0.0175" upper="3.7525" velocity="2.61"/>
-    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-0.0175" soft_upper_limit="3.7525"/>
-    <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
+    <dynamics D="1" K="7000" damping="0.003" mu_coulomb="0" mu_viscous="16"/>
   </joint>
   <!-- sub-link defining detailed meshes for collision with environment -->
   <link name="fer_link7">
@@ -222,7 +216,6 @@
     <child link="fer_link7"/>
     <axis xyz="0 0 1"/>
     <limit effort="12.0" lower="-2.8973" upper="2.8973" velocity="2.61"/>
-    <safety_controller k_position="100.0" k_velocity="40.0" soft_lower_limit="-2.8973" soft_upper_limit="2.8973"/>
-    <dynamics D="1" K="7000" damping="0.003" friction="0.2" mu_coulomb="0" mu_viscous="16"/>
+    <dynamics D="1" K="7000" damping="0.003" mu_coulomb="0" mu_viscous="16"/>
   </joint>
 </robot>
