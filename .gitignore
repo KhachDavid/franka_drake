@@ -40,3 +40,4 @@ __pycache__/
 libfranka/
 *png
 performance.json
+attachments/
