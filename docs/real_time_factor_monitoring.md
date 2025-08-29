@@ -26,27 +26,6 @@ The Drake simulation now includes comprehensive real-time factor monitoring that
 
 ## Usage
 
-### 0. Test the System (Optional)
-
-Before running the full simulation, you can test the monitoring system:
-
-```bash
-# Quick start with live updates (recommended)
-./scripts/perf/launch_performance_monitor.sh --continuous
-
-# Quick start with static data
-./scripts/perf/launch_performance_monitor.sh
-
-# Or manually:
-# Generate sample performance data
-python3 scripts/perf/test_performance_monitor.py
-
-# Start the server
-python3 scripts/perf/performance_monitor_server.py
-
-# Open in browser: http://localhost:8080/drake_performance_monitor.html
-```
-
 ### 1. Build and Run the Simulation
 
 ```bash
@@ -59,17 +38,7 @@ make -j$(nproc)
 ./bin/franka-fci-sim-embed-example
 ```
 
-### 2. View Console Output
-
-The simulation will display performance metrics in the console every 1 second:
-
-```
-[PERFORMANCE] RTF: 15.234x | Avg physics:  0.045ms | Freq:  22544 Hz | Target: 1000 Hz
-```
-
-Note: The simulation now runs in **turbo mode** by default, achieving much higher real-time factors (5x-25x) for research applications.
-
-### 3. View Web Dashboard
+### 2. View Web Dashboard
 
 1. Start the performance monitor server:
    ```bash
@@ -102,22 +71,6 @@ Note: The simulation now runs in **turbo mode** by default, achieving much highe
 - **800 Hz - 950 Hz**: Good - Acceptable for most applications
 - **< 800 Hz**: Poor - May affect control performance
 
-## Performance Optimization
-
-### Turbo Mode (Default)
-The simulation now runs in turbo mode by default for research applications:
-
-```bash
-# Turbo mode is now the default
-./bin/franka-fci-sim-embed-example
-
-# For real-time mode, set environment variable
-export TURBO=0
-./bin/franka-fci-sim-embed-example
-```
-
-Turbo mode achieves much higher RTF values (5x-25x) for faster research iterations.
-
 ### Headless Mode
 For maximum performance without visualization:
 
@@ -140,7 +93,7 @@ This removes Meshcat visualization overhead, typically improving performance by 
 ### Web Dashboard Not Updating
 1. Ensure the Python server is running
 2. Check browser console for JavaScript errors
-3. Verify the JSON file is being written to `scripts/performance.json`
+3. Verify the JSON file is being written to `scripts/perf/performance.json`
 4. Try refreshing the page
 
 ### 404 Error (File Not Found)
@@ -156,12 +109,4 @@ If port 8080 is in use, modify the port in `scripts/performance_monitor_server.p
 PORT = 8081  # Change to available port
 ```
 
-## Technical Details
-
-The monitoring system works by:
-1. Measuring wall-clock time for each simulation step
-2. Calculating cumulative statistics over 5-second intervals
-3. Writing performance data to JSON file
-4. Serving data via HTTP for web dashboard consumption
-
-The web dashboard uses vanilla JavaScript with no external dependencies, making it lightweight and portable.
+The web dashboard uses vanilla JavaScript. Do we really need React anymore?
