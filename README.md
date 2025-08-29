@@ -8,23 +8,24 @@ Libfranka compatible simulation server for the Franka FCI control box. It allows
 - Real-time factor monitoring with console and web dashboard
 - Models under `models/` (URDF + meshes)
 
-#### Docker
-It is recommended to install drake by using the Dockerfile in the base of this repository
+#### Build
 ```bash
+docker build --pull --no-cache -t franka:jazzy .
+
+# You can skip what comes after if you are running via docker
+# If running on a server with no RT Kernel, you won't be able to run docker
+# Therefore, the best way is to build drake in your server and run the example
+# Then, libfranka can be used from any computer with RT Kernel and you will be able to pass your simulation server's ip address. This would work depite your sim server not having RT Kernel. There is a bottleneck in the network, at the moment, the best way to run the simulation is to run it on the same machine as the real robot.
+
+```bash
+#It is recommended to install drake by using the Dockerfile in the base of this repository
 docker build --pull --no-cache -t franka:jazzy .
 cid=$(docker create drake:jammy)
 docker cp "$cid":/opt/drake /home/$USER/drake
 docker rm "$cid"
 ```
 
-#### Build
 ```bash
-
-# You can skip this step if you will be running via docker
-# If running on a server with no RT Kernel, you won't be able to run docker
-# Therefore, the best way is to build drake in your server and run the example
-# Then, libfranka can be used from any computer with RT Kernel and you will be able to pass your simulation server's ip address. This would work depite your sim server not having RT Kernel. There is a bottleneck in the network, at the moment, the best way to run the simulation is to run it on the same machine as the real robot.
-
 export DRAKE_INSTALL_DIR=/home/$USER/drake
 export PATH=$DRAKE_INSTALL_DIR/bin:$PATH
 export LD_LIBRARY_PATH=$DRAKE_INSTALL_DIR/lib:$LD_LIBRARY_PATH
@@ -43,7 +44,7 @@ make -j$(nproc)
 
 #### Run
 ```bash
-./build/bin/franka-fci-sim-embed-example
+./build/bin/franka-fci-sim-embed-example # These have a simple SDF model. You can modify these to have your own scene. Look into models/pick_and_place_scene.sdf for an example.
 ```
 
 #### Run with docker
@@ -57,6 +58,16 @@ docker run --rm -it \
   -e FRANKA_UDP_PORT=1340 \
   -e MESHCAT_PORT=17000 \
   franka:jazzy
+```
+
+### Run libfranka
+
+```bash
+# You can run your own libfranka examples with the following command:
+./your_libfranka_example 127.0.0.1
+
+# This will work even if you are not running this in the docker container.
+# You can also run the libfranka examples with docker.
 ```
 
 #### Run libfranka examples with docker
@@ -132,6 +143,11 @@ Start the server:
 ```
 
 Run the example twice (same binary), labeling each stream:
+
+This will work with the custom libfranka installation that can be found in [here](https://github.com/KhachDavid/libfranka).
+
+It contains an additional `monitoring_tee.h` header file that is used to record the real and sim data to two different files.
+
 ```bash
 # Real FCI
 libfranka/build/examples/pick_and_place --src=real panda0.robot
